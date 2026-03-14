@@ -53,7 +53,8 @@ const SEVERITY_ORDER: Record<string, number> = {
 // ── Fallback Envelope ──
 
 function buildFallbackEnvelope(context: GodDecisionContext): GodDecisionEnvelope {
-  // Minimal safe envelope that does not advance state
+  // BUG-22 fix: include a wait action so execution produces an observation,
+  // preventing the death spiral where empty actions → empty results → lost observations.
   return {
     diagnosis: {
       summary: 'Fallback: God decision service failed to produce valid envelope',
@@ -66,9 +67,11 @@ function buildFallbackEnvelope(context: GodDecisionContext): GodDecisionEnvelope
       reviewerOverride: false,
       acceptAuthority: 'reviewer_aligned',
     },
-    actions: [],
+    actions: [
+      { type: 'wait', reason: 'God decision parsing failed — will retry with preserved context' },
+    ],
     messages: [
-      { target: 'system_log', content: 'God decision fallback activated — no actions taken' },
+      { target: 'system_log', content: 'God decision fallback activated — waiting to retry' },
     ],
   };
 }
@@ -112,6 +115,17 @@ function sortObservations(observations: Observation[]): Observation[] {
  */
 const MAX_OBS_CHARS = 20000;
 const MAX_RUNTIME_OBS_CHARS = 300;
+
+/**
+ * Strip ANSI escape sequences from text (terminal control codes, mouse events, etc.).
+ * These can appear in task input when users paste from terminals.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]|\[<[0-9;]*[mM]/g;
+
+export function stripAnsiEscapes(text: string): string {
+  return text.replace(ANSI_ESCAPE_PATTERN, '').trim();
+}
 
 /**
  * Strip tool/shell markers from worker output before forwarding to God.
@@ -220,7 +234,7 @@ function buildPhasePlanSection(context: GodDecisionContext): string {
 function buildUserPrompt(observations: Observation[], context: GodDecisionContext): string {
   const sections: string[] = [];
 
-  sections.push(`## Task Goal\n${context.taskGoal}`);
+  sections.push(`## Task Goal\n${stripAnsiEscapes(context.taskGoal)}`);
 
   const phaseTypeStr = context.currentPhaseType ? ` (type: ${context.currentPhaseType})` : '';
   sections.push(`## Phase & Round\nPhase: ${context.currentPhaseId}${phaseTypeStr}\nRound: ${context.round} of ${context.maxRounds}\nActive Role: ${context.activeRole ?? 'none'}`);
@@ -356,7 +370,9 @@ export class GodDecisionService {
     }
 
     // Step 2: Extract and validate with retry
-    let result: Awaited<ReturnType<typeof extractWithRetry<GodDecisionEnvelope>>> | null;
+    // BUG-23 fix: extractWithRetry now always returns ExtractResult (never null),
+    // providing error details for diagnostics.
+    let result: Awaited<ReturnType<typeof extractWithRetry<GodDecisionEnvelope>>>;
     try {
       result = await extractWithRetry(
         rawOutput,
@@ -387,15 +403,16 @@ export class GodDecisionService {
     }
 
     // Step 3: Handle result
-    if (result && result.success) {
+    if (result.success) {
       this.degradation.handleGodSuccess();
       return result.data;
     }
 
     // Parse failed — trigger DegradationManager L3
+    // BUG-23 fix: include specific error details in the failure message
     this.degradation.handleGodFailure({
       kind: 'schema_validation',
-      message: 'GodDecisionEnvelope extraction/validation failed after retry',
+      message: `GodDecisionEnvelope extraction/validation failed: ${result.error}`,
     });
 
     return buildFallbackEnvelope(context);

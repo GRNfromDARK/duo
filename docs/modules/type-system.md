@@ -2,15 +2,18 @@
 
 ## 概述
 
-Duo 的类型系统分布在 5 个文件中，定义了从 CLI adapter 到 God 决策的完整类型体系。
+Duo 的类型系统分布在 8 个文件中，定义了从 CLI adapter 到 God 决策的完整类型体系。
 
-| 文件 | 职责 |
-|------|------|
-| `src/types/adapter.ts` | CLI adapter 核心接口 |
-| `src/types/session.ts` | Session 配置与验证 |
-| `src/types/ui.ts` | TUI 层消息与样式 |
-| `src/types/god-adapter.ts` | God adapter 接口 |
-| `src/types/god-schemas.ts` | God LLM 输出的 Zod schema |
+| 文件 | 职责 | 状态 |
+|------|------|------|
+| `src/types/adapter.ts` | CLI adapter 核心接口 | |
+| `src/types/session.ts` | Session 配置与验证 | |
+| `src/types/ui.ts` | TUI 层消息与样式 | |
+| `src/types/god-adapter.ts` | God adapter 接口 | |
+| `src/types/god-schemas.ts` | God LLM 输出的 Zod schema（legacy，已被 Envelope 取代） | deprecated |
+| `src/types/god-actions.ts` | Hand / GodAction 结构化动作目录 | **新增** |
+| `src/types/god-envelope.ts` | GodDecisionEnvelope 统一决策信封 + Authority 类型 | **新增** |
+| `src/types/observation.ts` | Observation 归一化类型系统 | **新增** |
 
 ---
 
@@ -318,9 +321,11 @@ God orchestrator 的 adapter 接口。
 
 ---
 
-## god-schemas.ts — God LLM 输出 Schema
+## god-schemas.ts — God LLM 输出 Schema（Legacy）
 
 > 源自需求：AR-002, OQ-002, OQ-003。Schema 字段名遵循 Card A.1 spec。
+>
+> **注意**：本文件中的 5 个 schema 已被 `god-envelope.ts` 中的统一 `GodDecisionEnvelope` 取代，保留为 deprecated 兼容层。新代码应使用 `GodDecisionEnvelope` + `GodAction`。
 
 使用 Zod 定义 God LLM 各决策点的输出结构。每个 schema 同时导出 Zod schema 对象（用于运行时校验）和推断的 TypeScript 类型（用于编译时类型检查）。
 
@@ -434,6 +439,321 @@ type GodAutoDecision = z.infer<typeof GodAutoDecisionSchema>;
 
 ---
 
+## god-actions.ts — GodAction 结构化动作目录
+
+> 源自需求：FR-007 (Structured Hand Catalog)、FR-008 (NL Message Channel)、FR-017 (Accept Must Carry Rationale)。Card: A.1。
+
+定义 Sovereign God Runtime 中 Hand 可执行的所有结构化动作。God 的决策通过 `GodAction` 转化为具体的状态变更操作，确保所有状态变化都有明确的动作支撑。
+
+### 11 种 Action Schema
+
+所有 action schema 使用 Zod `z.object()` 定义，通过 `type` 字段的 literal 值实现 discriminated union。
+
+#### `SendToCoder`
+
+向 Coder 发送消息/指令。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'send_to_coder'` | 动作类型标识 |
+| `message` | `string` | 发送给 Coder 的消息内容 |
+
+#### `SendToReviewer`
+
+向 Reviewer 发送消息/指令。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'send_to_reviewer'` | 动作类型标识 |
+| `message` | `string` | 发送给 Reviewer 的消息内容 |
+
+#### `StopRole`
+
+停止指定角色的执行。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'stop_role'` | 动作类型标识 |
+| `role` | `'coder' \| 'reviewer'` | 要停止的角色 |
+| `reason` | `string` | 停止原因 |
+
+#### `RetryRole`
+
+重试指定角色的执行。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'retry_role'` | 动作类型标识 |
+| `role` | `'coder' \| 'reviewer'` | 要重试的角色 |
+| `hint` | `string?` | 重试提示（指导改进方向） |
+
+#### `SwitchAdapter`
+
+切换指定角色的 adapter 实现。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'switch_adapter'` | 动作类型标识 |
+| `role` | `'coder' \| 'reviewer' \| 'god'` | 要切换的角色（含 God 自身） |
+| `adapter` | `string` | 目标 adapter 名称 |
+| `reason` | `string` | 切换原因 |
+
+#### `SetPhase`
+
+设置当前阶段（compound 任务的阶段切换）。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'set_phase'` | 动作类型标识 |
+| `phaseId` | `string` | 目标阶段 ID |
+| `summary` | `string?` | 阶段切换摘要 |
+
+#### `AcceptTask`
+
+接受/完成任务。来源：FR-017，accept 必须携带 rationale。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'accept_task'` | 动作类型标识 |
+| `rationale` | `'reviewer_aligned' \| 'god_override' \| 'forced_stop'` | 接受理由分类 |
+| `summary` | `string` | 完成摘要 |
+
+`rationale` 枚举值：
+
+| 值 | 含义 |
+|----|------|
+| `reviewer_aligned` | Reviewer 已同意，正常收敛 |
+| `god_override` | God 强制判定完成（覆盖 Reviewer 意见） |
+| `forced_stop` | 强制停止（超出轮次等异常情况） |
+
+#### `Wait`
+
+等待一段时间后再继续。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'wait'` | 动作类型标识 |
+| `reason` | `string` | 等待原因 |
+| `estimatedSeconds` | `number?` | 预估等待秒数 |
+
+#### `RequestUserInput`
+
+向用户请求输入/确认。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'request_user_input'` | 动作类型标识 |
+| `question` | `string` | 向用户提出的问题 |
+
+#### `ResumeAfterInterrupt`
+
+中断恢复后的策略选择。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'resume_after_interrupt'` | 动作类型标识 |
+| `resumeStrategy` | `'continue' \| 'redirect' \| 'stop'` | 恢复策略 |
+
+`resumeStrategy` 枚举值：
+
+| 值 | 含义 |
+|----|------|
+| `continue` | 继续之前的工作 |
+| `redirect` | 改变方向，重新开始 |
+| `stop` | 停止执行 |
+
+#### `EmitSummary`
+
+输出阶段/任务摘要。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `type` | `'emit_summary'` | 动作类型标识 |
+| `content` | `string` | 摘要内容 |
+
+### `GodAction` — Discriminated Union
+
+```ts
+type GodAction = z.infer<typeof GodActionSchema>;
+```
+
+11 种 action 的 discriminated union 类型，以 `type` 字段为判别器。`GodActionSchema` 使用 `z.discriminatedUnion('type', [...])` 构建，运行时通过 `type` 字段自动路由到对应的 schema 进行校验。
+
+### 导出的 TypeScript 类型
+
+```ts
+type SendToCoder = z.infer<typeof SendToCoderSchema>;
+type SendToReviewer = z.infer<typeof SendToReviewerSchema>;
+type StopRole = z.infer<typeof StopRoleSchema>;
+type RetryRole = z.infer<typeof RetryRoleSchema>;
+type SwitchAdapter = z.infer<typeof SwitchAdapterSchema>;
+type SetPhase = z.infer<typeof SetPhaseSchema>;
+type AcceptTask = z.infer<typeof AcceptTaskSchema>;
+type Wait = z.infer<typeof WaitSchema>;
+type RequestUserInput = z.infer<typeof RequestUserInputSchema>;
+type ResumeAfterInterrupt = z.infer<typeof ResumeAfterInterruptSchema>;
+type EmitSummary = z.infer<typeof EmitSummarySchema>;
+type GodAction = z.infer<typeof GodActionSchema>;
+```
+
+---
+
+## god-envelope.ts — GodDecisionEnvelope 统一决策信封
+
+> 源自需求：FR-001 (Sovereign God Authority)、FR-002 (Authority Override Must Be Explicit)、FR-004 (God Decision Envelope)、FR-016 (State Changes Must Be Action-Backed)。Card: A.2。
+>
+> **架构升级**：本 Envelope 取代了 `god-schemas.ts` 中的 5 个 legacy schema（`GodTaskAnalysis` / `GodPostCoderDecision` / `GodPostReviewerDecision` / `GodConvergenceJudgment` / `GodAutoDecision`），将 God 的所有决策统一为单一信封格式。核心设计原则：**action 与 message 分离，状态变化仅通过 Hand（action）执行**。
+
+### `Diagnosis` — 情境诊断
+
+God 对当前状态的分析判断。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `summary` | `string` | 当前情况摘要 |
+| `currentGoal` | `string` | 当前目标 |
+| `currentPhaseId` | `string` | 当前阶段 ID |
+| `notableObservations` | `string[]` | 值得关注的观测记录 |
+
+### `Authority` — 权限声明
+
+God 决策的权限级别声明，确保 override 行为显式可审计。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `userConfirmation` | `'human' \| 'god_override' \| 'not_required'` | 用户确认方式 |
+| `reviewerOverride` | `boolean` | 是否覆盖 Reviewer 意见 |
+| `acceptAuthority` | `'reviewer_aligned' \| 'god_override' \| 'forced_stop'` | 接受任务的权限来源 |
+
+`userConfirmation` 枚举值：
+
+| 值 | 含义 |
+|----|------|
+| `human` | 需要人工确认 |
+| `god_override` | God 代替人工做决定（必须记录 system_log） |
+| `not_required` | 无需确认 |
+
+### `EnvelopeMessageTarget`
+
+```ts
+type EnvelopeMessageTarget = 'coder' | 'reviewer' | 'user' | 'system_log';
+```
+
+消息目标：发送给 Coder、Reviewer、用户或写入系统日志。
+
+### `EnvelopeMessage` — 信封消息
+
+Envelope 内嵌的消息条目。与 `GodAction` 不同，消息不触发状态变更，仅用于传递信息。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `target` | `EnvelopeMessageTarget` | 消息目标 |
+| `content` | `string` | 消息内容 |
+
+### `GodDecisionEnvelope` — 统一决策信封
+
+God 每次决策的完整输出结构。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `diagnosis` | `Diagnosis` | 情境诊断 |
+| `authority` | `Authority` | 权限声明 |
+| `actions` | `GodAction[]` | 要执行的动作列表（来自 `god-actions.ts`） |
+| `messages` | `EnvelopeMessage[]` | 附带的消息列表 |
+
+### Refinement 语义约束
+
+Envelope schema 通过 `superRefine` 实施 4 条权限语义约束，确保 override 行为必须留下审计记录：
+
+| 条件 | 约束 | 目的 |
+|------|------|------|
+| `reviewerOverride === true` | `messages` 中必须包含 `target: 'system_log'` 条目 | 覆盖 Reviewer 必须记录原因 |
+| `acceptAuthority === 'god_override'` | `messages` 中必须包含 `target: 'system_log'` 条目 | God 强制接受必须记录原因 |
+| `userConfirmation === 'god_override'` | `messages` 中必须包含 `target: 'system_log'` 条目 | God 代替人工确认必须记录原因（BUG-18 修复） |
+| `acceptAuthority === 'forced_stop'` | `messages` 中必须包含 `target: 'user'` 条目 | 强制停止必须向用户说明情况 |
+
+### 导出的 TypeScript 类型
+
+```ts
+type Diagnosis = z.infer<typeof DiagnosisSchema>;
+type Authority = z.infer<typeof AuthoritySchema>;
+type EnvelopeMessage = z.infer<typeof EnvelopeMessageSchema>;
+type EnvelopeMessageTarget = z.infer<typeof EnvelopeMessageTargetSchema>;
+type GodDecisionEnvelope = z.infer<typeof GodDecisionEnvelopeSchema>;
+```
+
+---
+
+## observation.ts — Observation 归一化类型系统
+
+> 源自需求：FR-005 (Observation Normalization)。Card: A.1。
+
+定义 Sovereign God Runtime 的观测事件归一化类型。所有来自 Coder、Reviewer、Human 和 Runtime 的事件均被统一为 `Observation` 结构，作为 God 决策的输入。
+
+### `ObservationType` — 13 种观测类型
+
+```ts
+type ObservationType = typeof OBSERVATION_TYPES[number];
+```
+
+| 值 | 含义 | 典型来源 |
+|----|------|----------|
+| `work_output` | 工作产出（Coder 的代码输出） | coder |
+| `review_output` | 审查产出（Reviewer 的反馈） | reviewer |
+| `quota_exhausted` | API 配额耗尽 | runtime |
+| `auth_failed` | 认证失败 | runtime |
+| `adapter_unavailable` | Adapter 不可用 | runtime |
+| `empty_output` | 空输出（CLI 未产生有效内容） | runtime |
+| `meta_output` | 元信息输出（非工作内容） | coder / reviewer |
+| `tool_failure` | 工具调用失败 | runtime |
+| `human_interrupt` | 用户中断 | human |
+| `human_message` | 用户消息 | human |
+| `clarification_answer` | 用户对澄清请求的回答 | human |
+| `phase_progress_signal` | 阶段进度信号 | runtime |
+| `runtime_invariant_violation` | 运行时不变量违规 | runtime |
+
+### `ObservationSource` — 观测来源
+
+```ts
+type ObservationSource = 'coder' | 'reviewer' | 'god' | 'human' | 'runtime';
+```
+
+| 值 | 说明 |
+|----|------|
+| `coder` | 来自 Coder adapter |
+| `reviewer` | 来自 Reviewer adapter |
+| `god` | 来自 God 自身 |
+| `human` | 来自用户操作 |
+| `runtime` | 来自运行时系统 |
+
+### `ObservationSeverity` — 严重程度
+
+```ts
+type ObservationSeverity = 'info' | 'warning' | 'error' | 'fatal';
+```
+
+4 级严重程度，默认值为 `'error'`。
+
+### `Observation` — 归一化观测事件
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `source` | `ObservationSource` | 是 | 观测来源 |
+| `type` | `ObservationType` | 是 | 观测类型（13 种之一） |
+| `summary` | `string` | 是 | 事件摘要 |
+| `rawRef` | `string` | 否 | 原始数据引用（文件路径或 ID） |
+| `severity` | `ObservationSeverity` | 否 | 严重程度（默认 `'error'`） |
+| `timestamp` | `string` | 是 | ISO 时间戳 |
+| `round` | `number` (>=0, 整数) | 是 | 所属 round 编号 |
+| `phaseId` | `string \| null` | 否 | 所属阶段 ID（无阶段时为 null） |
+| `adapter` | `string` | 否 | 产生该观测的 adapter 名称 |
+
+### `isWorkObservation(obs: Observation): boolean`
+
+Type guard 函数。判断一个 Observation 是否为工作产出类型：仅 `work_output` 和 `review_output` 返回 `true`，其余 11 种类型（`quota_exhausted`、`empty_output` 等异常/系统事件）均返回 `false`。
+
+---
+
 ## 类型关系图
 
 ```
@@ -456,23 +776,53 @@ type GodAutoDecision = z.infer<typeof GodAutoDecisionSchema>;
                    └─────────────────────┘            │  GodAdapter          │
                                                       └─────────────────────┘
                       ui.ts
-                   ┌─────────────────────┐             god-schemas.ts
-                   │  RoleName            │            ┌─────────────────────────┐
-                   │  RoleStyle           │            │  TaskTypeSchema          │
-                   │  ROLE_STYLES         │            │  GodTaskAnalysis         │
-                   │  getRoleStyle()      │            │  GodPostCoderDecision    │
-                   │  MessageMetadata     │            │  GodPostReviewerDecision │
-                   │  Message             │            │  GodConvergenceJudgment  │
-                   │  ScrollState         │            │  GodAutoDecision         │
-                   └─────────────────────┘            │  MAX_REASONING_LENGTH    │
-                                                      └─────────────────────────┘
+                   ┌─────────────────────┐
+                   │  RoleName            │
+                   │  RoleStyle           │
+                   │  ROLE_STYLES         │
+                   │  getRoleStyle()      │
+                   │  MessageMetadata     │
+                   │  Message             │
+                   │  ScrollState         │
+                   └─────────────────────┘
+
+              god-schemas.ts (legacy)          god-actions.ts
+           ┌─────────────────────────┐     ┌──────────────────────────┐
+           │  TaskTypeSchema          │     │  SendToCoderSchema        │
+           │  GodTaskAnalysis         │     │  SendToReviewerSchema     │
+           │  GodPostCoderDecision    │     │  StopRoleSchema           │
+           │  GodPostReviewerDecision │     │  RetryRoleSchema          │
+           │  GodConvergenceJudgment  │     │  SwitchAdapterSchema      │
+           │  GodAutoDecision         │     │  SetPhaseSchema           │
+           │  MAX_REASONING_LENGTH    │     │  AcceptTaskSchema         │
+           └─────────────────────────┘     │  WaitSchema               │
+                                           │  RequestUserInputSchema   │
+              god-envelope.ts              │  ResumeAfterInterruptSchema│
+           ┌─────────────────────────┐     │  EmitSummarySchema        │
+           │  DiagnosisSchema         │     │  GodActionSchema ◄────────┼─┐
+           │  AuthoritySchema         │     └──────────────────────────┘ │
+           │  EnvelopeMessageSchema   │                                   │
+           │  GodDecisionEnvelopeSchema├──(actions)────────────────────────┘
+           └─────────────────────────┘
+
+              observation.ts
+           ┌─────────────────────────┐
+           │  ObservationType (13种)  │
+           │  ObservationSource       │
+           │  ObservationSeverity     │
+           │  Observation             │
+           │  isWorkObservation()     │
+           └─────────────────────────┘
 ```
 
 ### 关键依赖关系
 
 - **session.ts → god-adapter.ts**：`SessionConfig.god` 字段的类型为 `GodAdapterName`
 - **god-adapter.ts → adapter.ts**：`GodAdapter.execute()` 返回 `AsyncIterable<OutputChunk>`（共享 `OutputChunk` 类型）
-- **god-schemas.ts**：独立于其他类型文件，仅依赖外部库 `zod`
+- **god-envelope.ts → god-actions.ts**：`GodDecisionEnvelopeSchema.actions` 引用 `GodActionSchema`
+- **god-schemas.ts**：独立于其他类型文件，仅依赖外部库 `zod`（legacy，被 god-envelope.ts 取代）
+- **god-actions.ts**：独立于其他类型文件，仅依赖外部库 `zod`
+- **observation.ts**：独立于其他类型文件，仅依赖外部库 `zod`
 - **ui.ts**：独立于其他类型文件，无跨文件类型依赖
 
 ### 核心数据流向
@@ -480,5 +830,17 @@ type GodAutoDecision = z.infer<typeof GodAutoDecisionSchema>;
 1. **启动阶段**：`StartArgs` → 验证 → `SessionConfig`（含 `GodAdapterName`）→ 传入 `App`
 2. **恢复阶段**：持久化数据 → 重建 `SessionConfig` → `sanitizeGodAdapterForResume()` 校验 God adapter → 传入 `App`
 3. **运行阶段**：`CLIAdapter.execute()` / `GodAdapter.execute()` 产生 `OutputChunk` 流 → 转化为 `Message` 显示在 TUI
-4. **God 决策**：God LLM 原始输出 → Zod schema 校验 → 类型安全的决策对象（`GodTaskAnalysis`、`GodPostCoderDecision` 等）
-5. **展示阶段**：`Message.role`（`RoleName`）→ `getRoleStyle()` → `RoleStyle` 视觉样式；`ScrollState` 管理滚动
+4. **观测归一化**：CLI 原始输出 / Runtime 事件 / 用户操作 → 归一化为 `Observation` → 作为 God 决策输入
+5. **God 决策**：`Observation` → God LLM → `GodDecisionEnvelope`（含 `Diagnosis` + `Authority` + `GodAction[]` + `EnvelopeMessage[]`）
+6. **动作执行**：`GodAction[]` → Hand 逐一执行 → 状态变更（发送消息、切换阶段、接受任务等）
+7. **展示阶段**：`Message.role`（`RoleName`）→ `getRoleStyle()` → `RoleStyle` 视觉样式；`ScrollState` 管理滚动
+
+### 架构演进说明
+
+类型系统从 5 文件（v1）演进到 8 文件（v2），核心变化为引入 Sovereign God Runtime 架构：
+
+| 演进 | 变化 |
+|------|------|
+| `god-schemas.ts` → `god-envelope.ts` | 5 个独立 schema 统一为单一 `GodDecisionEnvelope`，action 与 message 分离 |
+| 新增 `god-actions.ts` | 将 God 的状态变更操作提取为 11 种结构化 action，通过 Hand 执行 |
+| 新增 `observation.ts` | 将所有输入事件归一化为 `Observation`，13 种类型覆盖正常产出和异常情况 |

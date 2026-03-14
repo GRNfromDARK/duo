@@ -12,9 +12,10 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 
 这一设计与 `InputArea.processInput`、`DirectoryPicker.processPickerInput` 等组件级纯函数保持一致，形成统一的 "state -> pure fn -> new state" 模式。
 
-整个 UI 状态层共 **19 个模块**，分为两组：
+整个 UI 状态层共 **23 个模块**，分为三组：
 - **Core UI 状态**（10 个）— 通用 UI 逻辑：滚动、显示模式、快捷键、Overlay、Markdown 解析、流式聚合、消息行计算
-- **God LLM UI 状态**（9 个新增）— God 决策层的 UI 状态：escape window、决策 banner、fallback、消息样式、overlay 控制面板、阶段切换、重分类、恢复摘要、任务分析
+- **God LLM UI 状态**（9 个）— God 决策层的 UI 状态：escape window、决策 banner、fallback、消息样式、overlay 控制面板、阶段切换、重分类、恢复摘要、任务分析
+- **Runtime/Lifecycle 状态**（4 个新增）— 运行时生命周期管理：任务完成流、全局 Ctrl+C 处理、God routing 反馈、安全退出
 
 ---
 
@@ -35,7 +36,7 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 | 9 | `session-runner-state.ts` | 流式聚合与路由决策 | 多 FR |
 | 10 | `message-lines.ts` | 消息行数计算与渲染 | — |
 
-### God LLM UI 状态（9 个新增）
+### God LLM UI 状态（9 个）
 
 | # | 文件 | 职责 | FR 来源 |
 |---|------|------|---------|
@@ -48,6 +49,15 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 | 17 | `reclassify-overlay.ts` | 运行时任务重分类 overlay 状态 | FR-002a |
 | 18 | `resume-summary.ts` | 恢复摘要构建 | FR-016 |
 | 19 | `task-analysis-card.ts` | 任务分析卡片状态 | FR-001a |
+
+### Runtime/Lifecycle 状态（4 个新增）
+
+| # | 文件 | 职责 | 说明 |
+|---|------|------|------|
+| 20 | `completion-flow.ts` | 任务完成后续流 | 构建追加任务的 prompt |
+| 21 | `global-ctrl-c.ts` | 全局 Ctrl+C 双击检测 | 区分 interrupt 与 safe_exit |
+| 22 | `god-routing-feedback.ts` | God post-code routing 反馈消息 | 构建 God routing 系统消息 |
+| 23 | `safe-shutdown.ts` | 安全退出流程 | 协调 adapter 终止与进程退出 |
 
 ---
 
@@ -474,6 +484,7 @@ interface RestoredSessionRuntime {
 | `created`, `coding` | `RESTORED_TO_CODING` |
 | `reviewing`, `routing_post_code` | `RESTORED_TO_REVIEWING` |
 | `interrupted` | `RESTORED_TO_INTERRUPTED` |
+| `clarifying` | `RESTORED_TO_INTERRUPTED` |
 | `god_deciding`, `manual_fallback`, 其他 | `RESTORED_TO_WAITING` |
 
 ---
@@ -535,6 +546,7 @@ interface RenderedMessageLine {
 | 函数 | 说明 |
 |------|------|
 | `getCharWidth(char)` | 检测 CJK 字符范围（U+1100-U+115F、U+2E80-U+A4CF、U+AC00-U+D7A3 等），返回宽度 2；其他字符返回 1 |
+| `computeStringWidth(s)` | 计算字符串的终端显示宽度，逐字符累加 `getCharWidth` |
 | `formatTime(timestamp, verbose)` | 非 verbose 返回 `HH:MM`，verbose 返回 `HH:MM:SS` |
 | `formatTokenCount(count)` | `< 1000` 返回原数字，`>= 1000` 返回 `Nk` 格式（如 `1.5k`） |
 
@@ -673,14 +685,15 @@ type GodMessageType =
   | 'task_analysis'       // 任务分析
   | 'phase_transition'    // 阶段切换
   | 'auto_decision'       // 代理决策
-  | 'anomaly_detection';  // 异常检测
+  | 'anomaly_detection'   // 异常检测
+  | 'clarification';      // God 澄清提问
 ```
 
 #### 核心函数
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `shouldShowGodMessage(type)` | `GodMessageType` | `boolean` | 四种类型均为可见（`VISIBLE_TYPES` Set） |
+| `shouldShowGodMessage(type)` | `GodMessageType` | `boolean` | 五种类型均为可见（`VISIBLE_TYPES` Set） |
 | `formatGodMessage(content, type)` | 内容 + 消息类型 | `string[]` | 生成 `╔═╗` / `║ content ║` / `╚═╝` 格式的行数组；内容按行 pad 到 `BOX_WIDTH(50) - 2` 宽度 |
 
 #### 辅助函数
@@ -693,7 +706,7 @@ type GodMessageType =
 
 - `BOX_WIDTH = 50`
 - `GOD_STYLE` — 预定义的样式对象
-- `TYPE_LABELS` — 各消息类型的标签映射（如 `'God · Task Analysis'`）
+- `TYPE_LABELS` — 各消息类型的标签映射（如 `'God · Task Analysis'`、`'God · Clarification'`）
 
 ---
 
@@ -889,13 +902,112 @@ interface TaskAnalysisCardState {
 
 ---
 
+## Runtime/Lifecycle 状态（新增）
+
+### 20. completion-flow.ts — 任务完成后续流
+
+任务完成后支持用户追加需求的 prompt 构建逻辑。
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `buildContinuedTaskPrompt(currentTask, followUpRequirement)` | 当前任务描述 + 追加需求 | `string` | 将原始任务与追加需求拼接为完整 prompt，格式为原始任务 + 空行 + `"Additional user requirement:"` + 追加需求文本 |
+
+#### 使用场景
+
+当用户在 CompletionScreen 中选择 "Continue current task" 时，调用此函数生成合并后的任务 prompt，传递给新一轮 Duo session。
+
+---
+
+### 21. global-ctrl-c.ts — 全局 Ctrl+C 双击检测
+
+全局级别的 Ctrl+C 行为管理。单次 Ctrl+C 中断当前 LLM 执行；500ms 内双击 Ctrl+C 触发安全退出。
+
+#### 核心类型
+
+```ts
+type GlobalCtrlCAction = 'interrupt' | 'safe_exit';
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `resolveGlobalCtrlCAction(now, lastCtrlCAt, thresholdMs?)` | 当前时间戳 + 上次 Ctrl+C 时间戳 + 阈值（默认 500ms） | `{ action: GlobalCtrlCAction; nextLastCtrlCAt: number }` | 若 `lastCtrlCAt > 0` 且两次按键间隔 <= 阈值则返回 `safe_exit` 并重置时间戳；否则返回 `interrupt` 并记录当前时间戳 |
+
+#### 常量
+
+- `DOUBLE_CTRL_C_THRESHOLD_MS = 500` — 双击判定窗口 500 毫秒
+
+#### 使用场景
+
+App 组件在根级 `useInput` 中使用此函数，配合 `lastCtrlCRef` 维护上次按键时间。`interrupt` action 分发给 SessionRunner 中断当前 adapter；`safe_exit` action 触发 `performSafeShutdown` 安全退出。
+
+---
+
+### 22. god-routing-feedback.ts — God Post-Code Routing 反馈消息
+
+为 God 的 post-code routing 决策生成用户可见的系统消息，告知用户 God 对 coder 输出的处置结果。
+
+#### 核心类型
+
+```ts
+interface PostCodeRoutingFeedbackInput {
+  action: GodPostCoderDecision['action'];  // 'continue_to_review' | 'retry_coder'
+  reviewerName: string;
+  coderName: string;
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `buildPostCodeRoutingFeedback({ action, reviewerName, coderName })` | routing 参数 | `SystemMessageDraft`（不含 `id`/`timestamp`） | `continue_to_review` -> `"God routing: coder output approved, forwarding to <reviewerName>."`；`retry_coder` -> `"God routing: requested another coder pass from <coderName>."` |
+
+#### 使用场景
+
+App 组件在 God post-code routing 完成后调用此函数，将生成的系统消息插入到消息列表中，让用户看到 God 对 coder 输出的 routing 决策。
+
+---
+
+### 23. safe-shutdown.ts — 安全退出流程
+
+协调 adapter 终止、输出中断和进程退出的安全关机流程。确保所有子进程在退出前被正确清理。
+
+#### 核心类型
+
+```ts
+interface SafeShutdownOptions {
+  adapters: KillableAdapter[];           // 需要 kill 的 adapter 列表
+  outputManager?: InterruptibleOutputManager;  // 可选的输出流管理器
+  beforeExit?: () => void;               // 退出前回调（如持久化状态）
+  onExit: () => void;                    // 最终退出回调（通常是 process.exit 或 ink exit）
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `performSafeShutdown(options)` | `SafeShutdownOptions` | `Promise<void>` | 1. 中断输出流（`outputManager.interrupt()`）；2. 并行 kill 所有 adapter（`Promise.allSettled`，容错不阻塞）；3. 执行 `beforeExit` 回调（best-effort，catch 所有异常）；4. 调用 `onExit` 完成退出 |
+
+#### 设计要点
+
+- 使用 `Promise.allSettled` 而非 `Promise.all`，确保某个 adapter kill 失败不会阻止其他 adapter 的清理
+- `beforeExit` 回调被 try/catch 包裹，退出流程不依赖持久化是否成功
+- 依赖注入式设计（duck typing），adapter 只需实现 `kill(): Promise<void>` 接口
+
+---
+
 ## 模块间依赖关系
 
 ```
 Core UI 依赖:
   message-lines.ts ──> markdown-parser.ts (parseMarkdown)
                    ──> display-mode.ts (DisplayMode 类型)
-                   ──> types/ui.ts (Message, ROLE_STYLES)
+                   ──> types/ui.ts (Message, ROLE_STYLES, getRoleStyle)
 
   keybindings.ts ──> (定义 OverlayType，与 overlay-state.ts 共享类型，含 'god')
 
@@ -930,6 +1042,16 @@ God LLM UI 依赖:
 
   task-analysis-card.ts ──> types/god-schemas.ts (GodTaskAnalysis)
 
+Runtime/Lifecycle 依赖:
+  completion-flow.ts ──> (无外部依赖，纯字符串拼接)
+
+  global-ctrl-c.ts ──> (无外部依赖，纯时间戳计算)
+
+  god-routing-feedback.ts ──> types/ui.ts (Message)
+                           ──> types/god-schemas.ts (GodPostCoderDecision)
+
+  safe-shutdown.ts ──> (无外部依赖，duck typing 接口)
+
 MainLayout 组件消费:
   scroll-state.ts, display-mode.ts, keybindings.ts,
   overlay-state.ts, message-lines.ts
@@ -937,5 +1059,7 @@ MainLayout 组件消费:
 App/SessionRunner 组件消费:
   session-runner-state.ts, escape-window.ts, god-decision-banner.ts,
   god-fallback.ts, god-overlay.ts, phase-transition-banner.ts,
-  reclassify-overlay.ts, resume-summary.ts, task-analysis-card.ts
+  reclassify-overlay.ts, resume-summary.ts, task-analysis-card.ts,
+  completion-flow.ts, global-ctrl-c.ts, god-routing-feedback.ts,
+  safe-shutdown.ts
 ```

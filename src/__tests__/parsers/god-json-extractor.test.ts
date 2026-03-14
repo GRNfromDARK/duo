@@ -208,24 +208,28 @@ describe('extractWithRetry', () => {
     expect(retryFn.mock.calls[0][0]).toContain('Schema validation failed');
   });
 
-  it('returns null after retry also fails', async () => {
+  it('returns error result after retry also fails (BUG-23: was returning null)', async () => {
     const badOutput = wrapInJsonBlock({ taskType: 'invalid' });
     const stillBadOutput = wrapInJsonBlock({ taskType: 'still_invalid' });
     const retryFn = vi.fn().mockResolvedValueOnce(stillBadOutput);
 
     const result = await extractWithRetry(badOutput, GodTaskAnalysisSchema, retryFn);
 
-    expect(result).toBeNull();
+    // BUG-23 fix: returns error details instead of null
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(false);
     expect(retryFn).toHaveBeenCalledTimes(1);
   });
 
-  it('returns null for pure text without retrying', async () => {
+  it('returns error result for pure text without retrying (BUG-23: was returning null)', async () => {
     const output = 'No JSON here.';
     const retryFn = vi.fn();
 
     const result = await extractWithRetry(output, GodTaskAnalysisSchema, retryFn);
 
-    expect(result).toBeNull();
+    // BUG-23 fix: returns error details instead of null
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(false);
     expect(retryFn).not.toHaveBeenCalled();
   });
 

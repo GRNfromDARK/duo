@@ -445,9 +445,14 @@ export const workflowMachine = setup({
           },
           {
             // Default: re-enter GOD_DECIDING (wait, no actions, etc.)
+            // BUG-22 fix: preserve existing observations when execution produces no new results,
+            // preventing the death spiral where fallback → empty results → lost observations.
             target: 'GOD_DECIDING',
             actions: assign({
-              currentObservations: ({ event }) => (event as ExecutionCompleteEvent).results,
+              currentObservations: ({ context, event }) => {
+                const results = (event as ExecutionCompleteEvent).results;
+                return results.length > 0 ? results : context.currentObservations;
+              },
             }),
           },
         ],

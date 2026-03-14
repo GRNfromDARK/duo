@@ -1,6 +1,6 @@
 # 会话管理模块
 
-> 源文件: `src/session/session-starter.ts` | `src/session/session-manager.ts` | `src/session/context-manager.ts`
+> 源文件: `src/session/session-starter.ts` | `src/session/session-manager.ts` | `src/session/context-manager.ts` | `src/session/prompt-log.ts`
 >
 > 需求追溯: FR-001 (AC-001 ~ AC-004), FR-002 (AC-005 ~ AC-008), FR-003 (AC-009 ~ AC-011)
 
@@ -8,7 +8,7 @@
 
 ## 1. 模块概览
 
-会话管理模块负责 Duo 会话的完整生命周期：**创建与校验** (`session-starter`) → **持久化与恢复** (`session-manager`) → **Prompt 构建** (`context-manager`)。三者协作确保会话状态在进程崩溃后仍可恢复，并为 Coder / Reviewer LLM 提供结构化的 prompt。
+会话管理模块负责 Duo 会话的完整生命周期：**创建与校验** (`session-starter`) → **持久化与恢复** (`session-manager`) → **Prompt 构建** (`context-manager`) → **Prompt 审计日志** (`prompt-log`)。四者协作确保会话状态在进程崩溃后仍可恢复，为 Coder / Reviewer LLM 提供结构化的 prompt，并记录所有发送给 LLM 的 prompt 以供调试与审计。
 
 ---
 
@@ -63,6 +63,7 @@ God adapter 解析由 `resolveGodAdapterForStart` 处理，失败时追加 error
 │   └── <uuid>/
 │       ├── snapshot.json      ← 权威源：metadata + state 合并快照
 │       ├── history.jsonl      ← 对话历史（append-only，每行一条 JSON）
+│       ├── prompt-log.jsonl   ← Prompt 审计日志（append-only，每行一条 JSON）
 │       ├── session.json       ← Legacy：仅 metadata
 │       ├── state.json         ← Legacy：仅 state
 │       └── history.json       ← Legacy：JSON 数组格式
@@ -71,7 +72,7 @@ God adapter 解析由 `resolveGodAdapterForStart` 处理，失败时追加 error
     └── reviewer.md
 ```
 
-**新会话同时写入新格式和 Legacy 文件**，以保证过渡期的向后兼容。读取时优先使用 `snapshot.json` / `history.jsonl`，不存在时自动 fallback 到 Legacy 文件。
+**新会话同时写入新格式和 Legacy 文件**，以保证过渡期的向后兼容。读取时优先使用 `snapshot.json` / `history.jsonl`，不存在时自动 fallback 到 Legacy 文件。会话创建时同时初始化空的 `prompt-log.jsonl`。
 
 ### 3.2 核心数据模型
 
@@ -98,10 +99,12 @@ God adapter 解析由 `resolveGodAdapterForStart` 处理，失败时追加 error
 | `coderSessionId` | `string?` | Coder adapter 的 CLI session ID |
 | `reviewerSessionId` | `string?` | Reviewer adapter 的 CLI session ID |
 | `godSessionId` | `string?` | Legacy God session ID（运行时恢复已禁用） |
+| `godAdapter` | `string?` | Legacy God adapter 名称（旧会话） |
 | `godTaskAnalysis` | `GodTaskAnalysis?` | God 任务分析（首轮写入，FR-011） |
 | `godConvergenceLog` | `ConvergenceLogEntry[]?` | God 收敛日志（每轮追加，摘要限 200 字符） |
 | `degradationState` | `DegradationState?` | God 降级状态（用于 resume） |
 | `currentPhaseId` | `string \| null?` | 复合任务当前阶段 ID |
+| `clarification` | `object?` | Card E.2：clarification 上下文（`frozenActiveProcess` + `clarificationRound`） |
 
 **HistoryEntry** — 单条对话记录：`round`, `role`, `content`, `timestamp`。
 
@@ -125,7 +128,7 @@ God adapter 解析由 `resolveGodAdapterForStart` 处理，失败时追加 error
 
 1. 生成 UUID 作为 session ID。
 2. 创建 `.duo/sessions/<id>/` 目录。
-3. 写入 `snapshot.json`（atomic）+ 空 `history.jsonl`。
+3. 写入 `snapshot.json`（atomic）+ 空 `history.jsonl` + 空 `prompt-log.jsonl`。
 4. 同时写入 Legacy 文件（`session.json` / `state.json` / `history.json`）。
 5. 初始状态：`round=0, status='created', currentRole='coder'`。
 
@@ -253,30 +256,92 @@ template.replace(/\{\{(\w+)\}\}/g, (match, key) => vars[key] ?? match)
 
 ---
 
-## 5. Crash Consistency 策略
+## 5. Prompt Log
+
+### 5.1 设计目标
+
+`prompt-log.ts` 提供 prompt 级别的审计日志，记录每一次发送给 LLM（Coder / Reviewer / God）的完整 prompt 内容。用于调试 prompt 质量、回溯对话行为以及排查异常输出的根因。
+
+### 5.2 数据模型
+
+每条日志为一个 `PromptLogEntry`：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `seq` | `number` | 自增序号（单 session 内全局唯一） |
+| `timestamp` | `string` | ISO 8601 时间戳 |
+| `round` | `number` | 所属轮次 |
+| `agent` | `'coder' \| 'reviewer' \| 'god'` | 目标 agent 角色 |
+| `adapter` | `string` | 使用的 CLI adapter 名称 |
+| `kind` | `string` | prompt 类型标识（自由格式，由调用方定义） |
+| `prompt` | `string` | 完整 prompt 文本 |
+| `systemPrompt` | `string \| null` | system prompt（不适用时为 `null`） |
+| `meta` | `Record<string, unknown>?` | 可选的扩展元数据 |
+
+`PromptLogEntryInput` 是写入时的输入类型，与 `PromptLogEntry` 相比省略 `seq`（自动分配）且 `timestamp` 可选（默认取当前时间）。
+
+### 5.3 存储格式
+
+- 文件名：`prompt-log.jsonl`（常量 `PROMPT_LOG_FILENAME` 导出）。
+- 位于 session 目录下：`.duo/sessions/<id>/prompt-log.jsonl`。
+- 采用 JSONL 格式，每行一条 JSON，通过 `appendFileSync` 逐行追加，与 `history.jsonl` 一致的 append-only 策略。
+
+### 5.4 PromptLogger 类
+
+`PromptLogger` 是核心类，管理单个 session 的 prompt 日志：
+
+**构造函数** — `new PromptLogger(sessionDir)`：读取现有日志文件最后一行的 `seq` 值以恢复序号计数器，支持进程重启后正确续接。
+
+**`append(entry)`** — 写入一条日志：
+1. 若 session 目录不存在，自动创建（`mkdirSync({ recursive: true })`）。
+2. `seq` 自增 +1，自动填充 `timestamp`（若未提供）。
+3. 通过 `appendFileSync` 追加到 `prompt-log.jsonl`。
+4. 返回包含分配后 `seq` 的完整 `PromptLogEntry`。
+
+**`getEntries()`** — 读取所有日志条目：解析 JSONL 文件，返回 `PromptLogEntry[]`。文件不存在或为空时返回空数组。
+
+### 5.5 便捷函数
+
+`appendPromptLog(sessionDir, entry)` 是无需手动实例化 `PromptLogger` 的快捷方法。内部每次调用创建新的 `PromptLogger` 实例。适用于散落在不同模块中的单次写入场景。
+
+### 5.6 序号恢复机制
+
+`loadCurrentSeq()` 在 `PromptLogger` 构造时读取日志文件最后一行的 `seq` 字段。若文件不存在、为空或最后一行解析失败，均从 0 开始计数。这确保了进程崩溃重启后序号不会重复。
+
+### 5.7 与 SessionManager 的集成
+
+`SessionManager.createSession()` 在创建新会话时，会同时初始化空的 `prompt-log.jsonl` 文件。`PROMPT_LOG_FILENAME` 常量由 `prompt-log.ts` 导出，由 `session-manager.ts` 导入使用，保证文件名一致性。
+
+---
+
+## 6. Crash Consistency 策略
 
 Duo 采用 **snapshot 为权威源** 的崩溃恢复策略：
 
 | 机制 | 说明 |
 |------|------|
 | **Atomic write (write-tmp-rename)** | `snapshot.json` 崩溃时要么是旧版本完整数据，要么是新版本完整数据，不会出现半写状态 |
-| **JSONL append-only** | `history.jsonl` 使用 `appendFileSync` 逐行追加，不存在 read-modify-write 竞态 |
+| **JSONL append-only** | `history.jsonl` 和 `prompt-log.jsonl` 使用 `appendFileSync` 逐行追加，不存在 read-modify-write 竞态 |
 | **最后一行容错** | JSONL 最后一行若 JSON 解析失败或结构不合法，视为崩溃残留，仅跳过并打印 warning |
 | **中间行严格** | 文件中间行出现损坏则抛出 `SessionCorruptedError`，不容忍非尾部数据损坏 |
 | **Legacy 双写** | 过渡期同时维护旧格式文件，但加载优先读取新格式。即使旧格式文件损坏，新格式完整即可恢复 |
 | **Monotonic timestamp** | `monotonicNow()` 确保时间戳严格递增，避免时钟回拨导致的排序异常 |
 | **Type guard 校验** | `isValidSnapshot` / `isValidHistoryEntry` 在加载时验证数据结构完整性 |
+| **Prompt log 序号恢复** | `PromptLogger` 构造时从日志尾行恢复 `seq`，崩溃后不会产生重复序号 |
 
 ---
 
-## 6. 关键设计决策
+## 7. 关键设计决策
 
 | 决策 | 理由 |
 |------|------|
 | Atomic write + rename | 防止进程崩溃导致文件半写损坏 |
 | JSONL append-only history | 避免 read-modify-write 竞态，对长会话友好 |
+| JSONL append-only prompt log | 与 history 一致的策略，保证 prompt 审计日志的崩溃安全 |
 | 单次 resolveTemplate | 防止模板注入，替换值中的 `{{}}` 不被二次解析 |
 | Legacy 双写 | 过渡期向后兼容，读取优先新格式 |
 | 多字节安全截断 | `Array.from(text)` 按 code point 截断，保护 CJK 字符 |
 | 近 3 轮完整 + 旧轮摘要 | 平衡上下文信息量与 token 预算 |
 | 80% budget ratio | 为 LLM 回复和系统开销预留 20% 空间 |
+| Prompt log 独立文件 | 与 history 分离，避免历史文件膨胀；prompt 内容通常远大于 history entry，独立文件便于按需读取和清理 |
+| Prompt log seq 自增 | 全局唯一序号便于跨 agent 排序和关联分析 |
