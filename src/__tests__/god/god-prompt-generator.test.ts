@@ -365,4 +365,54 @@ describe('generateReviewerPrompt', () => {
     expect(prompt).toContain('Build API');
     expect(prompt).toContain('Added endpoint');
   });
+
+  // Bug 11 fix: review-type phases should use proposal review instructions
+  test('uses proposal review instructions for review-type phases', () => {
+    const prompt = generateReviewerPrompt({
+      taskType: 'compound',
+      round: 1,
+      maxRounds: 10,
+      taskGoal: 'Improve UI experience',
+      lastCoderOutput: '## Proposed improvements\n1. StatusBar layout\n2. Mouse scroll\n3. Scrollbar',
+      phaseId: 'phase-2',
+      phaseType: 'review',
+    });
+
+    // Should contain proposal validation language
+    expect(prompt.toLowerCase()).toMatch(/proposal|reasonable|aligned/i);
+    // Should NOT contain code-review-only language like "bugs" or "security issues"
+    expect(prompt).not.toContain('security issues');
+    // Should contain explicit approval guidance (anti-nitpick)
+    expect(prompt).toContain('sound and directionally correct');
+  });
+
+  test('uses standard code review instructions for code-type phases', () => {
+    const prompt = generateReviewerPrompt({
+      taskType: 'compound',
+      round: 2,
+      maxRounds: 10,
+      taskGoal: 'Improve UI experience',
+      lastCoderOutput: 'Implemented StatusBar changes',
+      phaseId: 'phase-3',
+      phaseType: 'code',
+    });
+
+    // Should contain standard code review language
+    expect(prompt.toLowerCase()).toMatch(/blocking.*issues|bugs|logic errors/i);
+  });
+
+  test('all reviewer prompts include anti-nitpick verdict rules', () => {
+    for (const phaseType of ['explore', 'review', 'code'] as const) {
+      const prompt = generateReviewerPrompt({
+        taskType: 'compound',
+        round: 1,
+        maxRounds: 10,
+        taskGoal: 'Test task',
+        phaseId: 'phase-1',
+        phaseType,
+      });
+
+      expect(prompt).toContain('do not withhold approval for non-blocking suggestions');
+    }
+  });
 });

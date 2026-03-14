@@ -9,6 +9,8 @@ import {
   CHARS_PER_TOKEN,
 } from '../../god/god-context-manager.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
+import type { Observation } from '../../types/observation.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 
 // ── Helpers ──
 
@@ -233,6 +235,219 @@ describe('GodContextManager', () => {
       ]);
       const summary = mgr.buildTrendSummary(log);
       expect(summary).toMatch(/improving/i);
+    });
+  });
+
+  // ── Observation-based prompt building (Card C.3) ──
+
+  describe('buildObservationPrompt (Card C.3)', () => {
+    function makeObs(overrides: Partial<Observation> = {}): Observation {
+      return {
+        source: 'coder',
+        type: 'work_output',
+        summary: 'Coder completed implementation',
+        severity: 'info',
+        timestamp: '2026-01-01T00:00:00Z',
+        round: 1,
+        ...overrides,
+      };
+    }
+
+    function makeEnvelope(overrides: Partial<GodDecisionEnvelope> = {}): GodDecisionEnvelope {
+      return {
+        diagnosis: {
+          summary: 'Sent code to reviewer',
+          currentGoal: 'Implement feature X',
+          currentPhaseId: 'phase-1',
+          notableObservations: ['work_output from coder'],
+        },
+        authority: {
+          userConfirmation: 'not_required',
+          reviewerOverride: false,
+          acceptAuthority: 'reviewer_aligned',
+        },
+        actions: [{ type: 'send_to_reviewer', message: 'Please review' }],
+        messages: [{ target: 'system_log', content: 'Routing to reviewer' }],
+        ...overrides,
+      };
+    }
+
+    // AC-1: God prompt contains recent observations' type + severity + summary
+    describe('AC-1: observation type, severity, summary in prompt', () => {
+      it('includes observation type, severity, and summary in prompt', () => {
+        const observations: Observation[] = [
+          makeObs({ type: 'work_output', severity: 'info', summary: 'Implemented login page' }),
+          makeObs({ type: 'quota_exhausted', severity: 'error', summary: 'Rate limit hit', source: 'runtime' }),
+        ];
+
+        const prompt = mgr.buildObservationPrompt({
+          observations,
+          previousDecisions: [],
+          tokenBudget: 10_000,
+        });
+
+        expect(prompt).toContain('work_output');
+        expect(prompt).toContain('quota_exhausted');
+        expect(prompt).toContain('info');
+        expect(prompt).toContain('error');
+        expect(prompt).toContain('Implemented login page');
+        expect(prompt).toContain('Rate limit hit');
+      });
+
+      it('sorts observations with higher severity first', () => {
+        const observations: Observation[] = [
+          makeObs({ severity: 'info', summary: 'info-msg', timestamp: '2026-01-01T00:00:01Z' }),
+          makeObs({ severity: 'fatal', summary: 'fatal-msg', timestamp: '2026-01-01T00:00:02Z', source: 'runtime' }),
+          makeObs({ severity: 'warning', summary: 'warn-msg', timestamp: '2026-01-01T00:00:03Z' }),
+        ];
+
+        const prompt = mgr.buildObservationPrompt({
+          observations,
+          previousDecisions: [],
+          tokenBudget: 10_000,
+        });
+
+        const fatalIdx = prompt.indexOf('fatal-msg');
+        const warnIdx = prompt.indexOf('warn-msg');
+        const infoIdx = prompt.indexOf('info-msg');
+        expect(fatalIdx).toBeLessThan(warnIdx);
+        expect(warnIdx).toBeLessThan(infoIdx);
+      });
+    });
+
+    // AC-2: God prompt contains available Hand action list
+    describe('AC-2: Hand action catalog in prompt', () => {
+      it('includes all 11 Hand action types', () => {
+        const prompt = mgr.buildObservationPrompt({
+          observations: [makeObs()],
+          previousDecisions: [],
+          tokenBudget: 10_000,
+        });
+
+        expect(prompt).toContain('send_to_coder');
+        expect(prompt).toContain('send_to_reviewer');
+        expect(prompt).toContain('stop_role');
+        expect(prompt).toContain('retry_role');
+        expect(prompt).toContain('switch_adapter');
+        expect(prompt).toContain('set_phase');
+        expect(prompt).toContain('accept_task');
+        expect(prompt).toContain('wait');
+        expect(prompt).toContain('request_user_input');
+        expect(prompt).toContain('resume_after_interrupt');
+        expect(prompt).toContain('emit_summary');
+      });
+    });
+
+    // AC-3: God prompt requires GodDecisionEnvelope JSON format
+    describe('AC-3: requires GodDecisionEnvelope JSON format', () => {
+      it('includes output format requirement', () => {
+        const prompt = mgr.buildObservationPrompt({
+          observations: [makeObs()],
+          previousDecisions: [],
+          tokenBudget: 10_000,
+        });
+
+        expect(prompt).toContain('diagnosis');
+        expect(prompt).toContain('authority');
+        expect(prompt).toContain('actions');
+        expect(prompt).toContain('messages');
+        expect(prompt).toContain('JSON');
+      });
+    });
+
+    // AC-4: Context exhaustion triggers rebuild without losing critical observations
+    describe('AC-4: context exhaustion auto-rebuild', () => {
+      it('buildObservationRebuildPrompt preserves critical observations', () => {
+        const observations: Observation[] = [
+          makeObs({ type: 'work_output', severity: 'info', summary: 'Normal work', round: 1 }),
+          makeObs({ type: 'quota_exhausted', severity: 'error', summary: 'Rate limit critical', round: 2, source: 'runtime' }),
+          makeObs({ type: 'work_output', severity: 'info', summary: 'More work', round: 3 }),
+        ];
+
+        const decisions: GodDecisionEnvelope[] = [
+          makeEnvelope({ diagnosis: { summary: 'First decision', currentGoal: 'goal', currentPhaseId: 'p1', notableObservations: [] } }),
+        ];
+
+        const prompt = mgr.buildObservationRebuildPrompt({
+          observations,
+          previousDecisions: decisions,
+        });
+
+        // Critical (error+ severity) observations must be preserved
+        expect(prompt).toContain('Rate limit critical');
+        // Decision history should be summarized
+        expect(prompt).toContain('First decision');
+        // Should indicate this is a rebuild
+        expect(prompt).toMatch(/rebuild/i);
+      });
+    });
+
+    // Observation summarization: older observations compressed
+    describe('observation summarization', () => {
+      it('compresses older observations when exceeding token budget', () => {
+        const observations: Observation[] = [];
+        for (let i = 0; i < 50; i++) {
+          observations.push(
+            makeObs({
+              summary: `Observation ${i}: ${'x'.repeat(200)}`,
+              round: i,
+              timestamp: `2026-01-01T00:${String(i).padStart(2, '0')}:00Z`,
+            }),
+          );
+        }
+
+        const prompt = mgr.buildObservationPrompt({
+          observations,
+          previousDecisions: [],
+          tokenBudget: 2_000,
+        });
+
+        // Most recent observations should be present in full
+        expect(prompt).toContain('Observation 49');
+        // Prompt should fit within budget
+        expect(prompt.length).toBeLessThanOrEqual(2_000 * CHARS_PER_TOKEN);
+      });
+    });
+
+    // Previous decision summarization
+    describe('previous decision summarization', () => {
+      it('includes diagnosis summary and action types from previous decisions', () => {
+        const decisions: GodDecisionEnvelope[] = [
+          makeEnvelope({
+            diagnosis: {
+              summary: 'Routed to coder for implementation',
+              currentGoal: 'Feature X',
+              currentPhaseId: 'phase-1',
+              notableObservations: [],
+            },
+            actions: [{ type: 'send_to_coder', message: 'Implement it' }],
+          }),
+        ];
+
+        const prompt = mgr.buildObservationPrompt({
+          observations: [makeObs()],
+          previousDecisions: decisions,
+          tokenBudget: 10_000,
+        });
+
+        expect(prompt).toContain('Routed to coder for implementation');
+        expect(prompt).toContain('send_to_coder');
+      });
+    });
+
+    // Authority constraint hints
+    describe('authority constraint hints', () => {
+      it('includes authority constraint prompts', () => {
+        const prompt = mgr.buildObservationPrompt({
+          observations: [makeObs()],
+          previousDecisions: [],
+          tokenBudget: 10_000,
+        });
+
+        // Must remind God about override constraints
+        expect(prompt).toMatch(/override.*system_log|system_log.*override/i);
+        expect(prompt).toMatch(/accept.*rationale|rationale.*accept/i);
+      });
     });
   });
 

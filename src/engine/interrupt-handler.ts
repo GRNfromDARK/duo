@@ -1,12 +1,24 @@
 /**
  * InterruptHandler — manages Ctrl+C, text interrupt, and double-Ctrl+C exit.
- * Source: FR-007 (AC-024, AC-025, AC-026, AC-027, AC-028)
+ * Source: FR-007, FR-011 (Card E.1: Interrupt → Observation normalization)
  *
  * Responsibilities:
- * - Single Ctrl+C: kill current LLM process → INTERRUPTED state → preserve output
- * - Text interrupt: user types during LLM run → kill + instruction
- * - Double Ctrl+C (<500ms): save session → exit app
+ * - Single Ctrl+C: kill LLM process → emit human_interrupt observation via pipeline
+ * - Text interrupt: user types during LLM run → kill + emit human_message observation
+ * - User input after interrupt: emit clarification_answer observation via pipeline
+ * - Double Ctrl+C (<500ms): save session → exit app (only path that bypasses God)
+ *
+ * Card E.1 change: InterruptHandler no longer sends events directly to the state machine.
+ * All interrupt/input observations are routed through the observation pipeline (onObservation).
+ * The pipeline is responsible for sending INCIDENT_DETECTED/OBSERVATIONS_READY to the actor.
  */
+
+import {
+  createInterruptObservation,
+  createTextInterruptObservation,
+} from '../god/observation-integration.js';
+import { createObservation } from '../god/observation-classifier.js';
+import type { Observation } from '../types/observation.js';
 
 const DOUBLE_CTRLC_THRESHOLD_MS = 500;
 
@@ -28,6 +40,7 @@ export interface InterruptHandlerDeps {
   sessionManager: {
     saveState(sessionId: string, state: Record<string, unknown>): void;
   };
+  /** Card E.1: read-only state accessor — InterruptHandler must not send events to actor */
   actor: {
     send(event: Record<string, unknown>): void;
     getSnapshot(): {
@@ -41,6 +54,8 @@ export interface InterruptHandlerDeps {
   };
   onExit: () => void;
   onInterrupted: (info: InterruptedInfo) => void;
+  /** Card E.1: required — observation pipeline callback for routing to God */
+  onObservation: (obs: Observation) => void;
 }
 
 export class InterruptHandler {
@@ -55,7 +70,7 @@ export class InterruptHandler {
 
   /**
    * Handle a SIGINT (Ctrl+C) signal.
-   * - First press: kill LLM process, enter INTERRUPTED state
+   * - First press: kill LLM process, emit human_interrupt observation
    * - Second press within 500ms: save session and exit
    */
   async handleSigint(): Promise<void> {
@@ -77,7 +92,7 @@ export class InterruptHandler {
 
   /**
    * Handle text interrupt — user typed during LLM execution and pressed enter.
-   * Equivalent to Ctrl+C + immediate user input.
+   * Kills process and emits human_message observation via pipeline.
    */
   async handleTextInterrupt(text: string, resumeAs: 'coder' | 'reviewer'): Promise<void> {
     if (this.disposed) return;
@@ -98,7 +113,10 @@ export class InterruptHandler {
       // Process may have already exited — continue
     }
 
-    this.deps.actor.send({ type: 'USER_INTERRUPT' });
+    // Card E.1: emit observation via pipeline, NOT actor.send({ type: 'USER_INTERRUPT' })
+    this.deps.onObservation(
+      createTextInterruptObservation(text, snapshot.context.round),
+    );
 
     this.deps.onInterrupted({
       bufferedOutput,
@@ -108,16 +126,20 @@ export class InterruptHandler {
   }
 
   /**
-   * Send USER_INPUT event to actor after an interrupt.
-   * The user's instruction becomes additional context for the next LLM call.
+   * Card E.1: Emit clarification_answer observation for user input after interrupt.
+   * The observation routes through the pipeline to God for evaluation.
+   * No longer sends USER_INPUT event directly to actor.
    */
   handleUserInput(input: string, resumeAs: 'coder' | 'reviewer' | 'decision'): void {
     if (this.disposed) return;
-    this.deps.actor.send({
-      type: 'USER_INPUT',
-      input,
-      resumeAs,
-    });
+    const snapshot = this.deps.actor.getSnapshot();
+    this.deps.onObservation(
+      createObservation('clarification_answer', 'human', input, {
+        round: snapshot.context.round,
+        severity: 'info',
+        rawRef: input,
+      }),
+    );
   }
 
   /**
@@ -147,7 +169,10 @@ export class InterruptHandler {
       }
     }
 
-    this.deps.actor.send({ type: 'USER_INTERRUPT' });
+    // Card E.1: emit observation via pipeline, NOT actor.send({ type: 'USER_INTERRUPT' })
+    this.deps.onObservation(
+      createInterruptObservation(snapshot.context.round),
+    );
 
     this.deps.onInterrupted({
       bufferedOutput,

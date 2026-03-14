@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import type { Key } from 'ink';
 
@@ -6,9 +6,7 @@ export interface InputAreaProps {
   isLLMRunning: boolean;
   onSubmit: (text: string) => void;
   maxLines?: number;
-  /** Controlled mode: external value */
-  value?: string;
-  /** Controlled mode: called on value change */
+  /** Notification callback: called whenever the internal value changes */
   onValueChange?: (value: string) => void;
   /** Called when ? or / pressed with empty input */
   onSpecialKey?: (key: string) => void;
@@ -19,24 +17,44 @@ export interface InputAreaProps {
 const PLACEHOLDER_RUNNING = 'Type to interrupt, or wait for completion...';
 const PLACEHOLDER_IDLE = 'Type a message...';
 
+export interface InputState {
+  value: string;
+  cursorPos: number;
+}
+
+export const INITIAL_INPUT_STATE: InputState = { value: '', cursorPos: 0 };
+
 export type InputAction =
   | { type: 'submit'; value: string }
-  | { type: 'update'; value: string }
+  | { type: 'update'; value: string; cursorPos: number }
   | { type: 'special'; key: string }
   | { type: 'noop' };
 
 /**
- * Pure function: given current value, input char and key flags, return the action.
- * Extracted for testability since ink-testing-library doesn't reliably
- * trigger useInput for text input.
+ * Detect mouse escape sequence fragments in input.
+ * When terminal mouse mode is enabled, SGR and legacy mouse events
+ * arrive on stdin and may leak into useInput as regular text.
+ */
+const MOUSE_SEQUENCE_RE = /\x1b?\[<\d+;\d+;\d+[Mm]|\x1b?\[M.|[\x1b\x9b]\[<|\[<\d/;
+
+/**
+ * Pure function: given current state, input char and key flags, return the action.
+ * Supports cursor movement (left/right, Home/End, Ctrl+A/Ctrl+E) and
+ * insertion/deletion at cursor position.
  */
 export function processInput(
   currentValue: string,
+  cursorPos: number,
   input: string,
   key: Key,
   maxLines: number,
 ): InputAction {
-  // Enter without modifiers → submit
+  // Filter out mouse escape sequences that leak through from terminal mouse mode
+  if (input && MOUSE_SEQUENCE_RE.test(input)) {
+    return { type: 'noop' };
+  }
+
+  // Enter without modifiers -> submit
   if (key.return && !key.meta && !key.ctrl && !key.shift) {
     if (currentValue.trim().length > 0) {
       return { type: 'submit', value: currentValue };
@@ -44,34 +62,94 @@ export function processInput(
     return { type: 'noop' };
   }
 
-  // Alt+Enter / Ctrl+Enter / Shift+Enter → newline
+  // Alt+Enter / Ctrl+Enter / Shift+Enter -> newline at cursor
   if (key.return && (key.meta || key.ctrl || key.shift)) {
     const lines = currentValue.split('\n');
     if (lines.length < maxLines) {
-      return { type: 'update', value: currentValue + '\n' };
+      const newValue = currentValue.slice(0, cursorPos) + '\n' + currentValue.slice(cursorPos);
+      return { type: 'update', value: newValue, cursorPos: cursorPos + 1 };
     }
     return { type: 'noop' };
   }
 
-  // Backspace
-  if (key.backspace || key.delete) {
-    return { type: 'update', value: currentValue.slice(0, -1) };
+  // Ctrl+A -> move to start of line
+  if (key.ctrl && input === 'a') {
+    const lineStart = currentValue.lastIndexOf('\n', cursorPos - 1) + 1;
+    return { type: 'update', value: currentValue, cursorPos: lineStart };
   }
 
-  // ? and / when input is empty → special key (open overlay)
+  // Ctrl+E -> move to end of line
+  if (key.ctrl && input === 'e') {
+    let lineEnd = currentValue.indexOf('\n', cursorPos);
+    if (lineEnd === -1) lineEnd = currentValue.length;
+    return { type: 'update', value: currentValue, cursorPos: lineEnd };
+  }
+
+  // Ctrl+K -> delete from cursor to end of line
+  if (key.ctrl && input === 'k') {
+    let lineEnd = currentValue.indexOf('\n', cursorPos);
+    if (lineEnd === -1) lineEnd = currentValue.length;
+    if (cursorPos === lineEnd && cursorPos < currentValue.length) {
+      // At end of line, delete the newline character
+      const newValue = currentValue.slice(0, cursorPos) + currentValue.slice(cursorPos + 1);
+      return { type: 'update', value: newValue, cursorPos };
+    }
+    const newValue = currentValue.slice(0, cursorPos) + currentValue.slice(lineEnd);
+    return { type: 'update', value: newValue, cursorPos };
+  }
+
+  // Backspace -> delete char before cursor
+  if (key.backspace || key.delete) {
+    if (cursorPos > 0) {
+      const newValue = currentValue.slice(0, cursorPos - 1) + currentValue.slice(cursorPos);
+      return { type: 'update', value: newValue, cursorPos: cursorPos - 1 };
+    }
+    return { type: 'update', value: currentValue, cursorPos };
+  }
+
+  // Left arrow -> move cursor left
+  if (key.leftArrow) {
+    return { type: 'update', value: currentValue, cursorPos: Math.max(0, cursorPos - 1) };
+  }
+
+  // Right arrow -> move cursor right
+  if (key.rightArrow) {
+    return { type: 'update', value: currentValue, cursorPos: Math.min(currentValue.length, cursorPos + 1) };
+  }
+
+  // Home -> start of current line
+  if (key.home) {
+    const lineStart = currentValue.lastIndexOf('\n', cursorPos - 1) + 1;
+    return { type: 'update', value: currentValue, cursorPos: lineStart };
+  }
+
+  // End -> end of current line
+  if (key.end) {
+    let lineEnd = currentValue.indexOf('\n', cursorPos);
+    if (lineEnd === -1) lineEnd = currentValue.length;
+    return { type: 'update', value: currentValue, cursorPos: lineEnd };
+  }
+
+  // ? and / when input is empty -> special key (open overlay)
   if (currentValue === '' && (input === '?' || input === '/')) {
     return { type: 'special', key: input };
   }
 
-  // Ignore control keys
-  if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow ||
+  // Ignore remaining control keys
+  if (key.upArrow || key.downArrow ||
       key.pageUp || key.pageDown || key.tab || key.escape) {
     return { type: 'noop' };
   }
 
-  // Regular character input
+  // Ignore ctrl combinations not handled above
+  if (key.ctrl) {
+    return { type: 'noop' };
+  }
+
+  // Regular character input -> insert at cursor position
   if (input) {
-    return { type: 'update', value: currentValue + input };
+    const newValue = currentValue.slice(0, cursorPos) + input + currentValue.slice(cursorPos);
+    return { type: 'update', value: newValue, cursorPos: cursorPos + input.length };
   }
 
   return { type: 'noop' };
@@ -85,35 +163,48 @@ export function getDisplayLines(value: string, maxLines: number): string[] {
   return lines.slice(0, maxLines);
 }
 
+/**
+ * Compute which line and column the cursor is on, given the full value and cursor position.
+ */
+export function getCursorLineCol(value: string, cursorPos: number): { line: number; col: number } {
+  const before = value.slice(0, cursorPos);
+  const lines = before.split('\n');
+  return { line: lines.length - 1, col: lines[lines.length - 1]!.length };
+}
+
 export function InputArea({
   isLLMRunning,
   onSubmit,
   maxLines = 5,
-  value: controlledValue,
   onValueChange,
   onSpecialKey,
   disabled = false,
 }: InputAreaProps): React.ReactElement {
-  const [internalValue, setInternalValue] = useState('');
-  const isControlled = controlledValue !== undefined;
-  const value = isControlled ? controlledValue : internalValue;
-  const setValue = isControlled
-    ? (v: string) => onValueChange?.(v)
-    : setInternalValue;
+  const [state, setState] = useState<InputState>(INITIAL_INPUT_STATE);
+  const prevValueRef = useRef(state.value);
 
-  const displayLines = getDisplayLines(value, maxLines);
+  // Notify parent of value changes (notification only, not control)
+  useEffect(() => {
+    if (state.value !== prevValueRef.current) {
+      prevValueRef.current = state.value;
+      onValueChange?.(state.value);
+    }
+  }, [state.value, onValueChange]);
+
+  const displayLines = getDisplayLines(state.value, maxLines);
   const height = Math.max(1, displayLines.length);
+  const { line: cursorLine, col: cursorCol } = getCursorLineCol(state.value, state.cursorPos);
 
   useInput((input, key) => {
     if (disabled) return;
-    const action = processInput(value, input, key, maxLines);
+    const action = processInput(state.value, state.cursorPos, input, key, maxLines);
     switch (action.type) {
       case 'submit':
         onSubmit(action.value);
-        setValue('');
+        setState(INITIAL_INPUT_STATE);
         break;
       case 'update':
-        setValue(action.value);
+        setState({ value: action.value, cursorPos: action.cursorPos });
         break;
       case 'special':
         onSpecialKey?.(action.key);
@@ -123,30 +214,34 @@ export function InputArea({
     }
   });
 
-  const showPlaceholder = value.length === 0;
-  const firstLine = displayLines[0] ?? '';
-  const extraLines = displayLines.slice(1);
-
+  const showPlaceholder = state.value.length === 0;
   const promptIcon = isLLMRunning ? '◆' : '▸';
   const promptColor = isLLMRunning ? 'yellow' : 'cyan';
   const placeholderText = isLLMRunning ? PLACEHOLDER_RUNNING : PLACEHOLDER_IDLE;
 
   return (
     <Box flexDirection="column" height={height}>
-      <Box>
-        <Text color={promptColor} bold>{promptIcon} </Text>
-        {showPlaceholder ? (
+      {showPlaceholder ? (
+        <Box>
+          <Text color={promptColor} bold>{promptIcon} </Text>
           <Text dimColor>{placeholderText}</Text>
-        ) : (
-          <Text color="white">{firstLine}<Text dimColor>█</Text></Text>
-        )}
-      </Box>
-      {extraLines.map((line, i) => (
-        <Box key={i}>
-          <Text color={promptColor} bold>  </Text>
-          <Text color="white">{line}</Text>
         </Box>
-      ))}
+      ) : (
+        displayLines.map((line, lineIdx) => (
+          <Box key={lineIdx}>
+            <Text color={promptColor} bold>{lineIdx === 0 ? `${promptIcon} ` : '  '}</Text>
+            {lineIdx === cursorLine ? (
+              <Text color="white">
+                {line.slice(0, cursorCol)}
+                <Text dimColor>█</Text>
+                {line.slice(cursorCol)}
+              </Text>
+            ) : (
+              <Text color="white">{line}</Text>
+            )}
+          </Box>
+        ))
+      )}
     </Box>
   );
 }

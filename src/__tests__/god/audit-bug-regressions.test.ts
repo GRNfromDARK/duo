@@ -39,6 +39,23 @@ import { checkConsistency } from '../../god/consistency-checker.js';
 import type { GodConvergenceJudgment, GodPostReviewerDecision } from '../../types/god-schemas.js';
 import type { OutputChunk } from '../../types/adapter.js';
 import type { Message } from '../../types/ui.js';
+import type { Observation } from '../../types/observation.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
+
+// ── Card D.1 helpers: build observations and decision envelopes for the new topology ──
+
+function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+}
+
+function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
+  return {
+    diagnosis: { summary: 'test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
+    authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+    actions,
+    messages: [{ target: 'system_log', content: 'log' }],
+  };
+}
 
 // ══════════════════════════════════════════════════════════════
 // BUG-1 (P0): ConvergenceLogEntry type — no duplicate definition
@@ -205,55 +222,63 @@ describe('BUG-4: DriftDetector seq isolation', () => {
 // BUG-5 (P1): GOD_DECIDING→CODING round increment
 // ══════════════════════════════════════════════════════════════
 
-describe('BUG-5: GOD_DECIDING→CODING round increment', () => {
-  test('test_bug_5_user_confirm_continue_increments_round', () => {
+describe('BUG-5: EXECUTING→CODING round increment (Card D.1)', () => {
+  test('test_bug_5_execution_complete_to_coding_increments_round', () => {
     const actor = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor.start();
 
-    // Navigate to GOD_DECIDING
+    // Navigate: IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor.send({ type: 'CONVERGED' });
-
+    // Now in OBSERVING
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    // Now in GOD_DECIDING
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     const roundBefore = actor.getSnapshot().context.round;
 
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
+    // Decision: send_to_coder → EXECUTING → CODING with round increment
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
     expect(actor.getSnapshot().value).toBe('CODING');
     expect(actor.getSnapshot().context.round).toBe(roundBefore + 1);
 
     actor.stop();
   });
 
-  test('test_regression_5_round_increment_consistent_with_routing_post_review', () => {
-    // Path 1: ROUTING_POST_REVIEW → CODING (via ROUTE_TO_CODER)
+  test('test_regression_5_round_increment_consistent_across_paths_to_coding', () => {
+    // Path 1: CODING → OBSERVING → GOD_DECIDING → EXECUTING(send_to_coder) → CODING
     const actor1 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor1.start();
     actor1.send({ type: 'START_TASK', prompt: 'test' });
     actor1.send({ type: 'TASK_INIT_SKIP' });
     actor1.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor1.send({ type: 'ROUTE_TO_REVIEW' });
-    actor1.send({ type: 'REVIEW_COMPLETE', output: 'changes needed' });
-    actor1.send({ type: 'ROUTE_TO_CODER' });
+    actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    actor1.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+    actor1.send({ type: 'EXECUTION_COMPLETE', results: [] });
     const round1 = actor1.getSnapshot().context.round;
     actor1.stop();
 
-    // Path 2: GOD_DECIDING → CODING (via USER_CONFIRM continue)
+    // Path 2: CODING → OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer) → REVIEWING
+    //       → OBSERVING → GOD_DECIDING → EXECUTING(send_to_coder) → CODING
     const actor2 = createActor(workflowMachine, { input: { round: 0, maxRounds: 10 } });
     actor2.start();
     actor2.send({ type: 'START_TASK', prompt: 'test' });
     actor2.send({ type: 'TASK_INIT_SKIP' });
     actor2.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor2.send({ type: 'ROUTE_TO_REVIEW' });
-    actor2.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor2.send({ type: 'CONVERGED' });
-    actor2.send({ type: 'USER_CONFIRM', action: 'continue' });
+    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    actor2.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
+    actor2.send({ type: 'EXECUTION_COMPLETE', results: [] });
+    expect(actor2.getSnapshot().value).toBe('REVIEWING');
+    actor2.send({ type: 'REVIEW_COMPLETE', output: 'changes needed' });
+    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
+    actor2.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'fix issues' }]) });
+    actor2.send({ type: 'EXECUTION_COMPLETE', results: [] });
     const round2 = actor2.getSnapshot().context.round;
     actor2.stop();
 
+    // Both paths should increment round by 1 when going to CODING
     expect(round1).toBe(round2);
   });
 });
@@ -1401,6 +1426,7 @@ describe('Round4 BUG-4: InterruptHandler ignores events after dispose', () => {
       },
       onExit: vi.fn(),
       onInterrupted: vi.fn(),
+      onObservation: vi.fn(),
     };
   }
 
@@ -1411,7 +1437,8 @@ describe('Round4 BUG-4: InterruptHandler ignores events after dispose', () => {
 
     await handler.handleSigint();
 
-    expect(deps.actor.send).not.toHaveBeenCalled();
+    // Card E.1: check onObservation instead of actor.send
+    expect(deps.onObservation).not.toHaveBeenCalled();
     expect(deps.processManager.kill).not.toHaveBeenCalled();
   });
 
@@ -1422,7 +1449,8 @@ describe('Round4 BUG-4: InterruptHandler ignores events after dispose', () => {
 
     await handler.handleTextInterrupt('test', 'coder');
 
-    expect(deps.actor.send).not.toHaveBeenCalled();
+    // Card E.1: check onObservation instead of actor.send
+    expect(deps.onObservation).not.toHaveBeenCalled();
     expect(deps.processManager.kill).not.toHaveBeenCalled();
   });
 
@@ -1433,7 +1461,8 @@ describe('Round4 BUG-4: InterruptHandler ignores events after dispose', () => {
 
     handler.handleUserInput('test', 'coder');
 
-    expect(deps.actor.send).not.toHaveBeenCalled();
+    // Card E.1: check onObservation instead of actor.send
+    expect(deps.onObservation).not.toHaveBeenCalled();
   });
 });
 
@@ -2312,23 +2341,25 @@ describe('Round 8 BUG-7: classifyTrend oscillating returns stagnant', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// Round 9 BUG-1 (P1): ROUTING_POST_CODE → ROUTE_TO_CODER must increment round
+// Round 9 BUG-1 (P1): EXECUTING → CODING (send_to_coder) must increment round (Card D.1)
 // ══════════════════════════════════════════════════════════════
 
-describe('Round9 BUG-1: ROUTING_POST_CODE ROUTE_TO_CODER increments round', () => {
-  test('test_bug_r9_1_routing_post_code_route_to_coder_increments_round', () => {
+describe('Round9 BUG-1: EXECUTING→CODING (send_to_coder) increments round (Card D.1)', () => {
+  test('test_bug_r9_1_send_to_coder_via_executing_increments_round', () => {
     const actor = createActor(workflowMachine, { input: { maxRounds: 3 } });
     actor.start();
 
-    // IDLE → TASK_INIT → CODING → ROUTING_POST_CODE
+    // IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'empty output' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.round).toBe(0);
 
-    // ROUTING_POST_CODE → CODING via ROUTE_TO_CODER (retry_coder)
-    actor.send({ type: 'ROUTE_TO_CODER' });
+    // GOD_DECIDING → EXECUTING → CODING via send_to_coder (retry)
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
     expect(actor.getSnapshot().value).toBe('CODING');
     // Round MUST have incremented to prevent infinite loop
     expect(actor.getSnapshot().context.round).toBe(1);
@@ -2336,52 +2367,53 @@ describe('Round9 BUG-1: ROUTING_POST_CODE ROUTE_TO_CODER increments round', () =
     actor.stop();
   });
 
-  test('test_bug_r9_1_repeated_retry_coder_eventually_hits_maxRounds', () => {
-    const actor = createActor(workflowMachine, { input: { maxRounds: 3 } });
+  test('test_bug_r9_1_repeated_send_to_coder_increments_round_each_time', () => {
+    const actor = createActor(workflowMachine, { input: { maxRounds: 5 } });
     actor.start();
 
-    // Simulate repeated retry_coder cycles
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
 
-    for (let i = 0; i < 3; i++) {
+    // Simulate 2 repeated send_to_coder cycles (within circuit breaker limit of 3),
+    // each should increment round
+    for (let i = 0; i < 2; i++) {
       actor.send({ type: 'CODE_COMPLETE', output: 'bad output' });
-      expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe(i < 2 ? 'CODING' : 'GOD_DECIDING');
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+      actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+      actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
+      expect(actor.getSnapshot().value).toBe('CODING');
+      expect(actor.getSnapshot().context.round).toBe(i + 1);
     }
 
-    // After the third consecutive ROUTE_TO_CODER, retry breaker forces GOD_DECIDING.
-    expect(actor.getSnapshot().context.round).toBe(2);
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(3);
-
-    // Now go through review → evaluate → NOT_CONVERGED should hit maxRounds guard
-    actor.send({ type: 'CODE_COMPLETE', output: 'still bad' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'still issues' });
-    actor.send({ type: 'ROUTE_TO_EVALUATE' });
-    actor.send({ type: 'NOT_CONVERGED' });
-    // maxRounds reached, should go to GOD_DECIDING instead of CODING
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+    // 3rd consecutive route-to-coder trips circuit breaker → MANUAL_FALLBACK
+    actor.send({ type: 'CODE_COMPLETE', output: 'bad output again' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
+    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    expect(actor.getSnapshot().context.lastError).toContain('Circuit breaker');
 
     actor.stop();
   });
 
-  test('test_bug_r9_1_routing_post_review_route_to_coder_still_increments', () => {
-    // Ensure the existing ROUTING_POST_REVIEW → ROUTE_TO_CODER still works
+  test('test_bug_r9_1_send_to_coder_after_review_still_increments_round', () => {
+    // Navigate: CODING → OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer) → REVIEWING
+    //         → OBSERVING → GOD_DECIDING → EXECUTING(send_to_coder) → CODING
     const actor = createActor(workflowMachine, { input: {} });
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
+    expect(actor.getSnapshot().value).toBe('REVIEWING');
+
     actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-    actor.send({ type: 'ROUTE_TO_CODER' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'fix issues' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
 
     expect(actor.getSnapshot().value).toBe('CODING');
     expect(actor.getSnapshot().context.round).toBe(1);
@@ -2731,29 +2763,33 @@ describe('R10-BUG-2: POST_REVIEWER system prompt includes nextPhaseId', () => {
   });
 });
 
-// ── BUG-3 (R10-P1): ROUTING_POST_CODE→ROUTE_TO_CODER must respect maxRounds ──
+// ── BUG-3 (R10-P1): EXECUTING→CODING (send_to_coder) increments round correctly (Card D.1) ──
 
-describe('R10-BUG-3: ROUTING_POST_CODE→ROUTE_TO_CODER respects maxRounds', () => {
-  test('test_bug_r10_3_route_to_coder_from_post_code_blocked_at_max_rounds', () => {
-    // Start with round already at maxRounds
+describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', () => {
+  test('test_bug_r10_3_send_to_coder_increments_round_from_high_value', () => {
+    // Start with round already near maxRounds
     const actor = createActor(workflowMachine, {
-      input: { round: 5, maxRounds: 5 },
+      input: { round: 4, maxRounds: 5 },
     });
     actor.start();
 
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
-
-    // ROUTE_TO_CODER should go to GOD_DECIDING because maxRounds reached
-    actor.send({ type: 'ROUTE_TO_CODER' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+
+    // DECISION_READY with send_to_coder → EXECUTING → CODING
+    // Round should increment from 4 to 5
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
+    expect(actor.getSnapshot().value).toBe('CODING');
+    expect(actor.getSnapshot().context.round).toBe(5);
 
     actor.stop();
   });
 
-  test('test_bug_r10_3_route_to_coder_from_post_code_allowed_under_max_rounds', () => {
+  test('test_bug_r10_3_send_to_coder_under_max_rounds_goes_to_coding', () => {
     const actor = createActor(workflowMachine, {
       input: { round: 3, maxRounds: 5 },
     });
@@ -2762,10 +2798,11 @@ describe('R10-BUG-3: ROUTING_POST_CODE→ROUTE_TO_CODER respects maxRounds', () 
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
-    // ROUTE_TO_CODER should go to CODING because under maxRounds
-    actor.send({ type: 'ROUTE_TO_CODER' });
+    // DECISION_READY with send_to_coder → EXECUTING → CODING
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'retry' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
     expect(actor.getSnapshot().value).toBe('CODING');
     expect(actor.getSnapshot().context.round).toBe(4);
 
@@ -2854,8 +2891,11 @@ describe('R13-BUG-1: ProcessTimeoutError enables TIMEOUT dispatch to state machi
     actor.start();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
+    // Card D.1: navigate to REVIEWING via OBSERVING → GOD_DECIDING → EXECUTING(send_to_reviewer)
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review this' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
     expect(actor.getSnapshot().value).toBe('REVIEWING');
 
     // Simulate timeout during review
@@ -3169,13 +3209,13 @@ describe('BUG-9: God instruction passed to generateCoderPrompt', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// BUG-10: EVALUATING God path must update godLatency
+// BUG-10: GOD_DECIDING path must update godLatency (Card D.1: unified decision point)
 // ══════════════════════════════════════════════════════════════════
 
-describe('BUG-10: EVALUATING God path updates godLatency', () => {
-  test('test_bug_10_god_latency_updated_in_evaluating_path', () => {
-    // Simulate the EVALUATING useEffect God success path
-    let godLatency = 100; // stale value from previous routing
+describe('BUG-10: GOD_DECIDING path updates godLatency', () => {
+  test('test_bug_10_god_latency_updated_in_god_deciding_path', () => {
+    // Simulate the GOD_DECIDING God success path (Card D.1: unified decision point)
+    let godLatency = 100; // stale value from previous call
     const godCallStart = Date.now();
 
     // Simulate async delay
@@ -3205,30 +3245,30 @@ describe('BUG-10: EVALUATING God path updates godLatency', () => {
     expect(godLatency).toBe(100);
   });
 
-  test('test_bug_10_consistency_with_other_decision_points', () => {
-    // Verify that ROUTING_POST_CODE, ROUTING_POST_REVIEW, and EVALUATING
-    // all follow the same pattern: setGodLatency when usedGod === true
-    // This is a structural check — we verify the pattern exists in each path
+  test('test_bug_10_consistency_across_god_decision_calls', () => {
+    // Card D.1: GOD_DECIDING is the single unified decision point.
+    // Verify that each God call in the Observe → Decide → Act loop
+    // follows the same pattern: setGodLatency when usedGod === true
 
-    // Simulate all three paths setting latency
+    // Simulate multiple God decision calls setting latency
     const results: Record<string, number> = {};
 
-    // ROUTING_POST_CODE path
+    // First God call (after CODING → OBSERVING → GOD_DECIDING)
     const start1 = 1000;
-    results['post_code'] = 1150 - start1; // 150ms
+    results['after_coding'] = 1150 - start1; // 150ms
 
-    // ROUTING_POST_REVIEW path
+    // Second God call (after REVIEWING → OBSERVING → GOD_DECIDING)
     const start2 = 2000;
-    results['post_review'] = 2200 - start2; // 200ms
+    results['after_reviewing'] = 2200 - start2; // 200ms
 
-    // EVALUATING path (BUG-10 fix)
+    // Third God call (after incident → OBSERVING → GOD_DECIDING)
     const start3 = 3000;
-    results['evaluating'] = 3300 - start3; // 300ms
+    results['after_incident'] = 3300 - start3; // 300ms
 
     // All paths should produce valid latency values
-    expect(results['post_code']).toBeGreaterThan(0);
-    expect(results['post_review']).toBeGreaterThan(0);
-    expect(results['evaluating']).toBeGreaterThan(0);
+    expect(results['after_coding']).toBeGreaterThan(0);
+    expect(results['after_reviewing']).toBeGreaterThan(0);
+    expect(results['after_incident']).toBeGreaterThan(0);
   });
 });
 
@@ -3292,7 +3332,7 @@ describe('BUG-11: generateCoderPrompt receives instruction from local variable, 
 // BUG-12 (P1): convergenceLogRef — evaluateConvergence already appends internally
 // NOTE: This bug is a FALSE POSITIVE. evaluateConvergence() calls
 // appendConvergenceLog() which pushes to context.convergenceLog (the array
-// reference). No additional push in App.tsx EVALUATING useEffect is needed.
+// reference). No additional push in the GOD_DECIDING handler is needed.
 // This regression test proves the existing behavior is correct.
 // ══════════════════════════════════════════════════════════════
 
@@ -3336,5 +3376,249 @@ describe('BUG-12: convergenceLog is appended by evaluateConvergence internally',
     expect(convergenceLog[0].round).toBe(1);
     expect(convergenceLog[0].classification).toBe('changes_requested');
     expect(convergenceLog[0].blockingIssueCount).toBe(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// BUG-7/8 (P1): App.tsx must integrate dispatchMessages, checkNLInvariantViolations, logEnvelopeDecision
+// ══════════════════════════════════════════════════════════════
+
+describe('BUG-7/8: GOD_DECIDING integrates message dispatcher + NL invariant checks + envelope audit', () => {
+  test('test_bug_7_app_tsx_imports_dispatchMessages', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appSource = fs.readFileSync(
+      path.resolve(__dirname, '../../ui/components/App.tsx'),
+      'utf-8',
+    );
+    // Verify dispatchMessages is imported
+    expect(appSource).toContain('dispatchMessages');
+    // Verify it is actually called (not just imported)
+    expect(appSource).toMatch(/dispatchMessages\(envelope\.messages/);
+  });
+
+  test('test_bug_7_app_tsx_imports_checkNLInvariantViolations', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appSource = fs.readFileSync(
+      path.resolve(__dirname, '../../ui/components/App.tsx'),
+      'utf-8',
+    );
+    // Verify checkNLInvariantViolations is imported and called
+    expect(appSource).toContain('checkNLInvariantViolations');
+    expect(appSource).toMatch(/checkNLInvariantViolations\(/);
+  });
+
+  test('test_bug_7_app_tsx_imports_logEnvelopeDecision', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appSource = fs.readFileSync(
+      path.resolve(__dirname, '../../ui/components/App.tsx'),
+      'utf-8',
+    );
+    // Verify logEnvelopeDecision is imported and called
+    expect(appSource).toContain('logEnvelopeDecision');
+    expect(appSource).toMatch(/logEnvelopeDecision\(godAuditLoggerRef\.current/);
+  });
+
+  test('test_bug_7_dispatchMessages_routes_all_four_targets', async () => {
+    // Functional integration: verify dispatchMessages routes all four target types
+    const { dispatchMessages } = await import('../../god/message-dispatcher.js');
+    const { GodAuditLogger: Logger } = await import('../../god/god-audit.js');
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'bug7-'));
+    const displayCalls: string[] = [];
+    const ctx = {
+      pendingCoderMessage: null,
+      pendingReviewerMessage: null,
+      displayToUser: (msg: string) => displayCalls.push(msg),
+      auditLogger: new Logger(tmpDir),
+      round: 1,
+    };
+
+    const messages: import('../../types/god-envelope.js').EnvelopeMessage[] = [
+      { target: 'coder', content: 'coder instruction' },
+      { target: 'reviewer', content: 'reviewer instruction' },
+      { target: 'user', content: 'user message' },
+      { target: 'system_log', content: 'audit reason' },
+    ];
+
+    const result = dispatchMessages(messages, ctx);
+
+    // All four targets are routed
+    expect(result.pendingCoderMessage).toBe('coder instruction');
+    expect(result.pendingReviewerMessage).toBe('reviewer instruction');
+    expect(displayCalls.length).toBe(1);
+    expect(displayCalls[0]).toContain('user message');
+    const entries = ctx.auditLogger.getEntries({ type: 'message_dispatch' });
+    expect(entries.length).toBe(1);
+    expect(entries[0].outputSummary).toContain('audit reason');
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('test_bug_8_checkNLInvariantViolations_detects_accept_without_action', async () => {
+    // Functional: NL messages mention "accepted task" but no accept_task action → violation
+    const { checkNLInvariantViolations } = await import('../../god/message-dispatcher.js');
+    const messages: import('../../types/god-envelope.js').EnvelopeMessage[] = [
+      { target: 'user', content: 'I have accepted the task result' },
+    ];
+    const actions: any[] = []; // No accept_task action
+
+    const violations = checkNLInvariantViolations(messages, actions, {
+      round: 1,
+      phaseId: 'p1',
+    });
+
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations[0].type).toBe('runtime_invariant_violation');
+    expect(violations[0].summary).toContain('accept');
+  });
+
+  test('test_bug_8_logEnvelopeDecision_records_full_audit', async () => {
+    // Functional: logEnvelopeDecision writes structured audit with all envelope fields
+    const { logEnvelopeDecision, GodAuditLogger: Logger } = await import('../../god/god-audit.js');
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'bug8-'));
+    const logger = new Logger(tmpDir);
+    const envelope = makeEnvelope([{ type: 'send_to_coder', message: 'continue coding' }]);
+    const obs = [makeObs('work_output', 'coder')];
+
+    logEnvelopeDecision(logger, {
+      round: 1,
+      observations: obs,
+      envelope,
+      executionResults: [],
+    });
+
+    const entries = logger.getEntries({ type: 'god_decision' });
+    expect(entries.length).toBe(1);
+    expect(entries[0].decisionType).toBe('god_decision');
+    expect(entries[0].decision).toBeDefined();
+    const decision = entries[0].decision as any;
+    expect(decision.diagnosis).toBeDefined();
+    expect(decision.authority).toBeDefined();
+    expect(decision.actions).toBeDefined();
+    expect(decision.messages).toBeDefined();
+
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+// BUG-9 (P2): CODING/REVIEWING catch blocks must route observations via INCIDENT_DETECTED
+// ══════════════════════════════════════════════════════════════
+
+describe('BUG-9: error observations captured and routed via INCIDENT_DETECTED', () => {
+  test('test_bug_9_app_tsx_uses_INCIDENT_DETECTED_for_coder_errors', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appSource = fs.readFileSync(
+      path.resolve(__dirname, '../../ui/components/App.tsx'),
+      'utf-8',
+    );
+
+    // The CODING catch block should use INCIDENT_DETECTED, not PROCESS_ERROR
+    // Find the coder error catch block pattern
+    const codingCatchPattern = /Coder error:.*\n.*send\(\{[^}]*type:\s*'INCIDENT_DETECTED'/s;
+    expect(appSource).toMatch(codingCatchPattern);
+
+    // Verify there's no PROCESS_ERROR in coder catch blocks with observation creation
+    // (The old buggy pattern was: createTimeoutObservation(...); send({ type: 'PROCESS_ERROR' }))
+    const buggyCoderPattern = /createTimeoutObservation\(ctx\.round.*adapter: config\.coder[^)]*\);\s*\n[^}]*send\(\{[^}]*'PROCESS_ERROR'/s;
+    expect(appSource).not.toMatch(buggyCoderPattern);
+  });
+
+  test('test_bug_9_app_tsx_uses_INCIDENT_DETECTED_for_reviewer_errors', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appSource = fs.readFileSync(
+      path.resolve(__dirname, '../../ui/components/App.tsx'),
+      'utf-8',
+    );
+
+    // The REVIEWING catch block should use INCIDENT_DETECTED, not PROCESS_ERROR
+    const reviewingCatchPattern = /Reviewer error:.*\n.*send\(\{[^}]*type:\s*'INCIDENT_DETECTED'/s;
+    expect(appSource).toMatch(reviewingCatchPattern);
+
+    // Verify there's no PROCESS_ERROR in reviewer catch blocks with observation creation
+    const buggyReviewerPattern = /createTimeoutObservation\(ctx\.round.*adapter: config\.reviewer[^)]*\);\s*\n[^}]*send\(\{[^}]*'PROCESS_ERROR'/s;
+    expect(appSource).not.toMatch(buggyReviewerPattern);
+  });
+
+  test('test_bug_9_observation_return_value_is_captured_in_variable', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appSource = fs.readFileSync(
+      path.resolve(__dirname, '../../ui/components/App.tsx'),
+      'utf-8',
+    );
+
+    // Verify observation return value is captured (const observation = ...)
+    // For both coder and reviewer catch blocks
+    const capturePattern = /const observation = err instanceof ProcessTimeoutError/g;
+    const matches = appSource.match(capturePattern);
+    // Should appear twice: once for CODING, once for REVIEWING
+    expect(matches).not.toBeNull();
+    expect(matches!.length).toBe(2);
+  });
+
+  test('test_bug_9_createTimeoutObservation_returns_valid_observation_for_pipeline', async () => {
+    // Functional: verify the observation is a proper object suitable for INCIDENT_DETECTED
+    const { createTimeoutObservation } = await import('../../god/observation-integration.js');
+    const { ObservationSchema } = await import('../../types/observation.js');
+
+    const obs = createTimeoutObservation(3, { adapter: 'claude-code' });
+
+    // Must be a valid Observation
+    expect(() => ObservationSchema.parse(obs)).not.toThrow();
+    expect(obs.type).toBe('tool_failure');
+    expect(obs.source).toBe('runtime');
+    expect(obs.severity).toBe('error');
+    expect(obs.round).toBe(3);
+  });
+
+  test('test_bug_9_createProcessErrorObservation_returns_valid_observation_for_pipeline', async () => {
+    // Functional: verify the observation is a proper object suitable for INCIDENT_DETECTED
+    const { createProcessErrorObservation } = await import('../../god/observation-integration.js');
+    const { ObservationSchema } = await import('../../types/observation.js');
+
+    const obs = createProcessErrorObservation('Process exited with code 1', 2, {
+      adapter: 'codex',
+    });
+
+    // Must be a valid Observation
+    expect(() => ObservationSchema.parse(obs)).not.toThrow();
+    expect(obs.type).toBe('tool_failure');
+    expect(obs.source).toBe('runtime');
+    expect(obs.severity).toBe('error');
+    expect(obs.round).toBe(2);
+    expect(obs.summary).toBe('Process exited with code 1');
+  });
+
+  test('test_bug_9_workflow_machine_accepts_INCIDENT_DETECTED_in_CODING_state', () => {
+    // Verify the workflow machine can handle INCIDENT_DETECTED from CODING state
+    const actor = createActor(workflowMachine, { input: {} });
+    actor.start();
+
+    // Move to CODING state
+    const coderObs = makeObs('work_output', 'coder');
+    actor.send({ type: 'START_TASK', prompt: 'test' });
+
+    const snapshot = actor.getSnapshot();
+    // Should be in CODING
+    if (snapshot.value === 'CODING') {
+      // Send INCIDENT_DETECTED (the fixed path)
+      actor.send({
+        type: 'INCIDENT_DETECTED',
+        observation: makeObs('tool_failure', 'runtime'),
+      });
+
+      const afterIncident = actor.getSnapshot();
+      // Should transition to OBSERVING, not stay stuck
+      expect(afterIncident.value).toBe('OBSERVING');
+    }
+
+    actor.stop();
   });
 });

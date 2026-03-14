@@ -10,57 +10,53 @@ Duo 的终端 UI 基于以下技术栈：
 - **@xstate/react** — 通过 `useMachine` hook 驱动工作流状态机 (`workflowMachine`)，实现 CODING -> ROUTING -> REVIEWING -> EVALUATING 等状态转换
 - **纯函数状态层** — 所有复杂逻辑提取到 `src/ui/*.ts`（见 `ui-state.md`），组件仅负责渲染和事件绑定
 
+整个 UI 组件层共 **21 个组件**，分为两组：
+- **Core 组件**（16 个）— 通用 UI 组件：布局、输入、消息渲染、Overlay、状态栏等
+- **God LLM 组件**（5 个新增）— God 决策层专用组件：决策 banner、阶段切换、重分类、Setup 向导、任务分析
+
 ## 组件树结构
 
 ```
 App (根组件)
 ├── [Setup 阶段]
-│   ├── DirectoryPicker         — 项目目录选择
-│   ├── CLISelector (内部组件)  — Coder/Reviewer 选择
-│   └── TaskInput (内部组件)    — 任务描述输入
+│   └── SetupWizard (NEW)
+│       ├── BrandHeader (内部)         — ASCII art logo + 版本号
+│       ├── ProgressStepper (内部)     — 6 步进度指示器
+│       ├── DirectoryPicker            — 项目目录选择
+│       ├── CLISelector (内部)         — Coder/Reviewer 选择
+│       ├── GodSelector (内部, NEW)    — God adapter 选择
+│       ├── TaskInput (内部)           — 任务描述输入
+│       └── ConfirmScreen (内部)       — 配置确认
 │
-└── [Session 阶段] SessionRunner (内部组件)
-    └── MainLayout (NEW)
-        ├── StatusBar 区域       — 顶部状态栏（内联 <Text inverse bold>）
-        ├── RenderedLineView[]   — 消息行列表（基于 message-lines.ts 输出）
-        │   └── LineSpan 渲染    — 逐 span 着色
-        ├── ScrollIndicator      — 新输出提示条
-        ├── InputArea            — 用户输入区域
+└── [Session 阶段] SessionRunner (App 内部)
+    ├── TaskAnalysisCard (NEW)         — God 任务分析卡片
+    ├── GodDecisionBanner (NEW)        — God 决策 escape window
+    ├── PhaseTransitionBanner (NEW)    — 阶段切换 escape window
+    ├── ReclassifyOverlay (NEW)        — 运行时任务重分类
+    └── MainLayout
+        ├── StatusBar                  — 顶部状态栏（含 God 信息）
+        ├── RenderedLineView[]         — 消息行列表（基于 message-lines.ts）
+        │   └── LineSpan 渲染          — 逐 span 着色
+        ├── ScrollIndicator            — 新输出提示条
+        ├── InputArea                  — 用户输入区域
         └── [Overlay 层]（全屏替换布局）
-            ├── HelpOverlay      — 快捷键帮助
-            ├── ContextOverlay   — 会话上下文
-            ├── TimelineOverlay  — 事件时间线
-            └── SearchOverlay    — 消息搜索
+            ├── HelpOverlay            — 快捷键帮助
+            ├── ContextOverlay         — 会话上下文
+            ├── TimelineOverlay        — 事件时间线
+            └── SearchOverlay          — 消息搜索
 
-其他组件（由 StreamRenderer / MainLayout 外部使用）：
-  ├── MessageView          — 单条消息渲染（含 StreamRenderer）
-  ├── StreamRenderer       — Markdown 流式渲染
-  │   └── CodeBlock        — 可折叠代码块
-  ├── SystemMessage        — 系统消息（routing/interrupt/waiting）
-  ├── ConvergenceCard      — 收敛卡片
-  └── DisagreementCard     — 分歧卡片
+其他组件（由 StreamRenderer / App 外部使用）：
+  ├── MessageView              — 单条消息渲染（含 StreamRenderer）
+  ├── StreamRenderer           — Markdown 流式渲染
+  │   └── CodeBlock            — 可折叠代码块
+  ├── SystemMessage            — 系统消息（routing/interrupt/waiting）
+  ├── ConvergenceCard          — 收敛卡片
+  └── DisagreementCard         — 分歧卡片
 ```
-
-## 两个阶段
-
-### Setup 阶段 — 交互式引导
-
-当启动参数不完整时，App 进入 Setup 阶段，依次经历 4 个 phase：
-
-1. **select-dir** -> 渲染 `DirectoryPicker`，选择项目目录
-2. **select-coder** -> 渲染 `CLISelector`，选择 Coder CLI 工具
-3. **select-reviewer** -> 渲染 `CLISelector`（排除已选 Coder），选择 Reviewer
-4. **enter-task** -> 渲染 `TaskInput`，输入任务描述
-
-每个 phase 完成后将结果写入 `setupConfig`，最后进入 `running` phase。
-
-### Session 阶段 — 运行态
-
-配置完整后渲染 `SessionRunner`，通过 xstate 状态机驱动整个工作流。`SessionRunner` 内部使用大量 `useEffect` 监听状态变化，自动触发 adapter 执行、路由决策、收敛评估等副作用。SessionRunner 将消息列表和状态文本传给 `MainLayout` 进行布局渲染。
 
 ---
 
-## 组件详细说明
+## Core 组件（16 个）
 
 ### 1. App.tsx — 根组件
 
@@ -75,14 +71,9 @@ interface AppProps {
 ```
 
 **职责**:
-- 判断配置是否完整（`projectDir` + `coder` + `reviewer` + `task` 均存在），决定进入 Setup 还是 Session 阶段
-- Setup 阶段：管理 `SetupPhase` 状态（`select-dir` -> `select-coder` -> `select-reviewer` -> `enter-task`）
-- Session 阶段：实例化 `SessionRunner`，传入最终 `SessionConfig`
-
-**关键行为**:
-- 内部包含 `CLISelector` 和 `TaskInput` 两个私有子组件
-- `CLISelector` 过滤已安装的 CLI（`d.installed === true`）并支持上下箭头选择、Enter 确认；可通过 `exclude` 排除已选的 CLI
-- `TaskInput` 支持文本输入、Backspace 删除、Enter 提交
+- 判断配置是否完整（`projectDir` + `coder` + `reviewer` + `god` + `task` 均存在），决定进入 Setup 还是 Session 阶段
+- Setup 阶段：渲染 `SetupWizard`，完成后获得完整 `SessionConfig`
+- Session 阶段：实例化内部 `SessionRunner`，传入最终 `SessionConfig`
 
 **SessionRunner — App 内部的 Session 阶段核心组件**:
 
@@ -98,31 +89,31 @@ interface SessionRunnerProps {
 
 SessionRunner 的职责包括：
 - 通过 `useMachine(workflowMachine)` 创建 xstate actor，`MAX_ROUNDS = 20`
-- 持有 adapter、ContextManager、ConvergenceService、ChoiceDetector、SessionManager、OutputStreamManager 等服务的 `useRef`
+- 持有 adapter（coder、reviewer、god）、ContextManager、ConvergenceService、ChoiceDetector、SessionManager、OutputStreamManager、DegradationManager 等服务的 `useRef`
 - 管理 `messages`（`Message[]`）、`tokenCount`、`timelineEvents` 等 UI 状态
-- 监听 `CODING` 状态：启动 coder adapter 流式执行，通过 `createStreamAggregation` + `applyOutputChunk` 聚合输出，实时 `updateMessage` 更新流式消息，完成后 `finalizeStreamAggregation` 决定 outcome
-- 监听 `REVIEWING` 状态：与 CODING 对称，启动 reviewer adapter
-- 监听 `ROUTING_POST_CODE` / `ROUTING_POST_REVIEW`：调用 `decidePostCodeRoute` / `decidePostReviewRoute` 触发路由决策
-- 监听 `EVALUATING`：执行 `convergenceRef.current.evaluate()` 进行收敛检查，插入 `createRoundSummaryMessage` 分隔线
-- 处理用户输入（`handleInputSubmit`）：CODING/REVIEWING 状态下中断当前进程并附带指令；WAITING_USER 状态下通过 `resolveUserDecision` 解析用户意图
-- 处理 Ctrl+C（`handleInterrupt`）：单次中断当前进程（kill adapter + interrupt OutputStreamManager），500ms 内双击退出应用（退出前保存会话状态）
-- 会话持久化：创建/保存/恢复会话状态，均为 best-effort（try-catch 忽略错误）
-- 支持 Adapter session resume：恢复会话时通过 `isSessionCapable` 检测 adapter 是否支持 `restoreSessionId`
+- 管理 God 相关状态：`godTaskAnalysis`、`godConvergenceLog`、`degradationState`、`currentPhaseId`
+- 监听 `CODING` 状态：启动 coder adapter 流式执行，通过 `createStreamAggregation` + `applyOutputChunk` 聚合输出
+- 监听 `REVIEWING` 状态：与 CODING 对称
+- 监听 `GOD_DECIDING` 状态：调用 God adapter 进行自动决策，显示 `GodDecisionBanner`
+- 监听 `EVALUATING`：执行收敛检查，插入 round summary
+- 处理 God 任务分析：session 启动时显示 `TaskAnalysisCard`
+- 处理阶段切换：compound 任务显示 `PhaseTransitionBanner`
+- 处理 Ctrl+R：显示 `ReclassifyOverlay`
+- 处理用户输入和中断
+- 会话持久化（含 God 状态恢复）
 
 **副作用管理模式**: 每个 xstate 状态对应一个 `useEffect`，依赖 `stateValue` 变化。CODING 和 REVIEWING 的 effect 包含 cleanup 函数（`cancelled = true; osm.interrupt()`），确保组件卸载或状态切换时中断进程。
 
-**statusText 构建**: SessionRunner 将状态信息组装为单个字符串传给 MainLayout：`Duo  <projectName>  Round N/Max  <Agent> <icon> <status>  <tokens>tok`
-
 ---
 
-### 2. MainLayout.tsx (NEW) — 主布局组件
+### 2. MainLayout.tsx — 主布局组件
 
 **Props**:
 
 ```ts
 interface MainLayoutProps {
   messages: Message[];
-  statusText: string;
+  statusText?: string;
   columns: number;
   rows: number;
   isLLMRunning?: boolean;
@@ -130,6 +121,21 @@ interface MainLayoutProps {
   onNewSession?: () => void;
   onInterrupt?: () => void;
   onClearScreen?: () => void;
+  onReclassify?: () => void;
+  statusBarProps?: {
+    projectPath: string;
+    round: number;
+    maxRounds: number;
+    status: WorkflowStatus;
+    activeAgent: string | null;
+    tokenCount: number;
+    taskType?: string;
+    currentPhase?: string;
+    godAdapter?: string;
+    reviewerAdapter?: string;
+    degradationLevel?: string;
+    godLatency?: number;
+  };
   contextData?: {
     roundNumber: number;
     coderName: string;
@@ -147,7 +153,7 @@ interface MainLayoutProps {
 
 | 区域 | 高度 | 内容 |
 |------|------|------|
-| Status Bar | 1 行 | `<Text inverse bold> statusText </Text>` |
+| Status Bar | 1 行 | `StatusBar` 组件或 fallback `<Text inverse bold>` |
 | 分隔线 | 1 行 | `─` 重复 `columns` 次 |
 | 消息区 | `rows - 6` 行（动态） | 滚动窗口内的 `RenderedLineView` 列表 + ScrollIndicator |
 | 分隔线 | 1 行 | `─` 重复 `columns` 次 |
@@ -162,12 +168,9 @@ interface MainLayoutProps {
 - **显示模式**: 持有 `DisplayMode`（默认 `'minimal'`），通过 `toggleDisplayMode` 切换
 - **Overlay 状态**: 持有 `OverlayState`（来自 `overlay-state.ts`），有 overlay 时全屏替换正常布局
 - **清屏功能**: `Ctrl+L` 记录 `clearedCount`（当前已过滤消息数），后续只显示新消息，不删除历史
-- **键盘处理**: `useInput` -> `processKeybinding(input, key, ctx)` -> `handleAction(action)`，分发到各状态更新函数
-- **Search overlay 输入**: 当 search overlay 打开时，额外将文本输入路由到 `updateSearchQuery`（Backspace 删字符，其他字符追加）
+- **键盘处理**: `useInput` -> `processKeybinding(input, key, ctx)` -> `handleAction(action)`，分发到各状态更新函数；新增 `reclassify` action 转发给 `onReclassify` 回调
+- **Search overlay 输入**: 当 search overlay 打开时，额外将文本输入路由到 `updateSearchQuery`
 - **InputArea 集成**: 受控模式（`value` + `onValueChange`），`disabled` 在 overlay 打开时为 true
-- **InputArea 特殊键**: `?` 和 `/` 在输入为空时通过 `onSpecialKey` 回调打开对应 overlay
-
-**RenderedLineView 内部组件**: 将 `RenderedMessageLine` 的 `spans[]` 数组渲染为多个带样式的 `<Text>` 元素。
 
 ---
 
@@ -184,20 +187,30 @@ interface StatusBarProps {
   activeAgent: string | null;
   tokenCount: number;
   columns: number;
+  godAdapter?: string;
+  reviewerAdapter?: string;
+  taskType?: string;
+  currentPhase?: string;
+  degradationLevel?: string;  // L1/L2/L3/L4
+  godLatency?: number;        // God 决策延迟 (ms)
 }
 ```
 
 **职责**: 渲染顶部 1 行状态栏，固定高度。
 
-**注意**: 当前 MainLayout 中状态栏由 SessionRunner 预先组装为 `statusText` 字符串，使用内联 `<Text inverse bold>` 渲染，并未直接使用 StatusBar 组件。StatusBar 组件作为独立的可复用组件存在。
-
-**布局**: ` Duo  <项目路径>  Round N/Max  <Agent> <icon> <status>  <tokens>tok`
+**布局**: ` Duo  <项目路径>  Round N/Max  <Agent> <icon> <status>  [taskType]  φ:phase  God:X  ↓L2  Nms  Ntok`
 
 **关键行为**:
 - 状态图标和颜色由 `STATUS_CONFIG` 映射：active=绿色 `◆`，idle=白色 `◇`，error=红色 `⚠`，routing=黄色 `◈`，interrupted=白色 `⏸`，done=绿色 `◇`
 - token 计数 >= 1000 时显示为 `Nk` 格式（如 `1.5k`）
 - 项目路径根据可用宽度自动截断，末尾添加 `...`
 - 使用 `<Text inverse bold>` 实现反色高亮背景
+- **God 信息显示**（新增）：
+  - `taskType` — cyan 颜色显示 `[taskType]`
+  - `currentPhase` — magenta 颜色显示 `φ:phase`
+  - `godAdapter` — 仅与 reviewer 不同时显示 `God:X`（magenta）
+  - `degradationLevel` — L4 显示红色 `God:disabled`；L2/L3 显示黄色 `↓L2`/`↓L3`；L1 隐藏
+  - `godLatency` — dim 颜色显示延迟毫秒数
 
 ---
 
@@ -290,7 +303,7 @@ interface HelpOverlayProps {
 **职责**: 显示完整的快捷键列表。
 
 **关键行为**:
-- 数据源为 `keybindings.ts` 的 `KEYBINDING_LIST`（13 项）
+- 数据源为 `keybindings.ts` 的 `KEYBINDING_LIST`（15 项，含 God 相关快捷键）
 - 圆角边框 (`borderStyle="round"`)，cyan 边框色
 - 快捷键列宽 18 字符，黄色加粗；描述为默认颜色
 - 根据终端行数限制可见条目数 (`rows - 6`)
@@ -396,10 +409,9 @@ interface InputAreaProps {
 - **提交**: Enter 提交（非空时），提交后清空输入
 - **多行**: Alt+Enter / Ctrl+Enter / Shift+Enter 插入换行，最多 `maxLines` 行
 - **特殊键**: 输入为空时按 `?` 或 `/` 触发 `onSpecialKey` 回调（用于打开 overlay）
-- **占位符**: LLM 运行中且输入为空时显示 `Type to interrupt, or wait for completion...`
-- 输入提示符: `> `（白色加粗），光标用 dim 的 `█` 表示
+- **占位符**: LLM 运行中显示 `Type to interrupt, or wait for completion...`；空闲时显示 `Type a message...`
+- 输入提示符: LLM 运行中 `◆`（黄色），空闲时 `▸`（cyan）
 - `disabled` 为 true 时忽略所有输入事件
-- 忽略方向键、PageUp/PageDown、Tab、Escape 等控制键
 
 **纯函数 `processInput(currentValue, input, key, maxLines)`**:
 - 提取为独立纯函数以便测试
@@ -503,13 +515,8 @@ interface MessageViewProps {
 
 **关键行为**:
 - **角色头**: 使用 `ROLE_STYLES[message.role]` 获取颜色和边框字符，格式 `<border> [<displayName> · <roleLabel>] HH:MM`
-- **Verbose 模式额外信息**:
-  - 时间戳精确到秒 (`HH:MM:SS`)
-  - 显示 token 计数 `[Nk tokens]`
-  - 显示 CLI 命令 `$ <command>`（若 `metadata.cliCommand` 存在）
+- **Verbose 模式额外信息**: 时间戳精确到秒，显示 token 计数，显示 CLI 命令
 - **内容委托**: 将 `message.content` 和 `message.isStreaming` 传递给 `StreamRenderer` 渲染
-- 底部 `marginBottom={1}` 实现消息间距
-- `roleLabel` 存在时显示为 `displayName · roleLabel` 格式（如 `Claude · Coder`）
 
 ---
 
@@ -529,8 +536,8 @@ interface StreamRendererProps {
 
 **关键行为**:
 - 通过 `useMemo` 调用 `parseMarkdown(content)` 并做 `compactSegments` 处理
-- **Activity block 压缩** (Minimal 模式): 连续的 `activity_block` 在 minimal 模式下压缩为单个 `activity_summary`，格式 `⏺ N actions · M results · K errors · latest <title>: <summary>`；单个 activity 不显示统计计数
-- **代码块状态管理**: 使用 `expandedBlocks` (`Record<number, boolean>`) 追踪每个代码块的展开/折叠状态，通过稳定的 `codeBlockIndex` 跨渲染持久化
+- **Activity block 压缩** (Minimal 模式): 连续的 `activity_block` 在 minimal 模式下压缩为单个 `activity_summary`，格式 `⏺ N actions · M results · K errors · latest <title>: <summary>`
+- **代码块状态管理**: 使用 `expandedBlocks` (`Record<number, boolean>`) 追踪每个代码块的展开/折叠状态
 - **流式指示器**: `isStreaming` 为 true 时在内容末尾显示旋转 spinner（`⣾⣽⣻⢿⡿⣟⣯⣷`），字符基于 `content.length % 8` 选择（确保测试输出确定性）
 - **Segment 渲染映射**:
 
@@ -538,34 +545,189 @@ interface StreamRendererProps {
 |-------------|---------|
 | `text` | 按 `\n` 分行，每行一个 `<Text>` |
 | `code_block` | 委托给 `<CodeBlock>`，传入 `expanded` 和 `onToggle` |
-| `activity_block` | 根据 kind 显示图标（`⏺`/`⎿`/`⚠`）+ 标题摘要；verbose 模式下展开内容为 CodeBlock（`language="text"`） |
+| `activity_block` | 根据 kind 显示图标（`⏺`/`⎿`/`⚠`）+ 标题摘要；verbose 模式下展开为 CodeBlock |
 | `activity_summary` | 单行摘要 `<Text color={color}>{icon} {summary}</Text>` |
-| `inline_code` | 灰底白字 `<Text backgroundColor="gray" color="white">` |
+| `inline_code` | 灰底白字 |
 | `bold` | `<Text bold>` |
 | `italic` | `<Text italic>` |
-| `list_item` | `*`/`-` 显示为 `  •`，有序列表保留 `  N.` 标记 |
-| `table` | 动态列宽（取表头和数据最大值 + 2），`-+-` 分隔线 |
+| `list_item` | `*`/`-` 显示为 `  •`，有序列表保留标记 |
+| `table` | 动态列宽，`-+-` 分隔线 |
 
 ---
 
-## App.tsx 中的副作用管理
+## God LLM 组件（5 个新增）
 
-SessionRunner 使用以下 `useEffect` 管理副作用：
+### 17. GodDecisionBanner.tsx — God 决策 Escape Window
 
-| 监听条件 | 触发时机 | 副作用 |
-|----------|---------|--------|
-| `[]`（mount） | 组件挂载 | 创建/恢复会话，添加初始系统消息，发送 `START_TASK` 或恢复事件 |
-| `stateValue, ctx.round` | 状态转换 | best-effort 保存会话状态（包含 adapter session ID） |
-| `CODING` | 进入编码状态 | 创建流式消息、启动 coder adapter、聚合输出、完成后发送 `CODE_COMPLETE`；cleanup 中断进程 |
-| `ROUTING_POST_CODE` | 编码完成路由 | 调用 `decidePostCodeRoute`，处理 Choice 检测和路由转发 |
-| `REVIEWING` | 进入审查状态 | 与 CODING 对称；额外追踪 `reviewerOutputsRef` |
-| `ROUTING_POST_REVIEW` | 审查完成路由 | 调用 `decidePostReviewRoute`，处理 Choice 检测 |
-| `EVALUATING` | 评估收敛 | 调用 `convergenceRef.evaluate()`，记录轮次，插入 round summary，发送 `CONVERGED` 或 `NOT_CONVERGED` |
-| `DONE` | 会话完成 | 添加完成消息，3 秒后调用 `exit()` |
-| `ERROR` | 错误状态 | 添加错误消息，自动发送 `RECOVERY` 转到 `WAITING_USER` |
-| `WAITING_USER` | 等待用户 | 添加等待提示消息 |
+**来源**: FR-008 (AC-025, AC-026, AC-027)
 
-**useEffect 依赖键技巧**: CODING 和 REVIEWING 的 effect 使用 `` stateValue === 'CODING' ? `CODING-${ctx.round}` : stateValue `` 作为依赖，确保同一状态的不同轮次能重新触发 effect。
+**Props**:
+
+```ts
+interface GodDecisionBannerProps {
+  decision: GodAutoDecision;
+  onExecute: () => void;
+  onCancel: () => void;
+}
+```
+
+**职责**: 显示 God 自动决策的 escape window，允许用户确认或取消。
+
+**关键行为**:
+- 使用 `god-decision-banner.ts` 的纯状态函数管理 countdown、key press、tick
+- **AI-driven 模式**: `ESCAPE_WINDOW_MS = 0`，决策创建即执行，`onExecute` 立即触发
+- **Progress bar**: 20 字符宽，`█` 已填充 + `░` 未填充，显示剩余秒数
+- **决策摘要**: `formatDecisionSummary` 生成 `"God: accepting output"` 或 `"God: continuing - \"instruction\""`
+- **键盘**: `[Space]` 立即执行，`[Esc]` 取消
+- **样式**: 黄色圆角边框，标题 `⚡ GOD 决策`
+- **回调保护**: 使用 `firedRef` 确保 `onExecute`/`onCancel` 只触发一次
+- **Countdown timer**: 100ms interval tick，通过 `useEffect` 管理生命周期
+
+---
+
+### 18. PhaseTransitionBanner.tsx — 阶段切换 Escape Window
+
+**来源**: FR-010 (AC-033, AC-034)
+
+**Props**:
+
+```ts
+interface PhaseTransitionBannerProps {
+  nextPhaseId: string;
+  previousPhaseSummary: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+```
+
+**职责**: compound 任务阶段切换时显示 2 秒 escape window，允许用户确认或取消切换。
+
+**关键行为**:
+- 使用 `phase-transition-banner.ts` 的纯状态函数管理状态转换
+- **2 秒等待窗口**: `PHASE_ESCAPE_WINDOW_MS = 2000`，超时自动确认
+- **Progress bar**: 同 GodDecisionBanner，20 字符宽
+- **摘要显示**: `previousPhaseSummary` 截断到 120 字符，dim 颜色
+- **键盘**: `[Space]` 立即确认，`[Esc]` 取消（留在当前阶段）
+- **样式**: magenta 圆角边框，标题 `⚡ Phase Transition → <nextPhaseId>`
+- **回调保护**: 使用 `firedRef` 确保回调只触发一次
+
+---
+
+### 19. ReclassifyOverlay.tsx — 运行时任务重分类
+
+**来源**: FR-002a (AC-010, AC-011, AC-012)
+
+**Props**:
+
+```ts
+interface ReclassifyOverlayProps {
+  currentType: string;
+  currentRound: number;
+  onSelect: (newType: string) => void;
+  onCancel: () => void;
+}
+```
+
+**职责**: Ctrl+R 触发的全屏 overlay，允许用户在 session 运行中更改任务类型。
+
+**关键行为**:
+- 使用 `reclassify-overlay.ts` 的纯状态函数管理选择和导航
+- **可选类型**: `explore`、`code`、`review`、`debug`（不含 `compound`）
+- **当前信息显示**: 当前任务类型和当前轮次
+- **选择列表**: 每项显示 `[N] type  description`，当前类型标记 `← current`
+- **键盘**:
+  - `↑/↓` 移动选择
+  - `Enter` 确认当前选择
+  - `1-4` 数字键直接选中并确认
+  - `Esc` 取消（恢复原类型）
+- **选中项高亮**: cyan 颜色 + `❯` 前缀
+- **样式**: cyan 圆角边框，标题 `◈ Reclassify Task`
+
+**类型描述**:
+
+| 类型 | 描述 |
+|------|------|
+| `explore` | Explore first, then code |
+| `code` | Direct coding implementation |
+| `review` | Code review only |
+| `debug` | Focused debugging |
+
+---
+
+### 20. SetupWizard.tsx — Setup 向导
+
+**来源**: v2 Setup 交互重构
+
+**Props**:
+
+```ts
+interface SetupWizardProps {
+  detected: DetectedCLI[];
+  initialConfig?: Partial<SessionConfig>;
+  onComplete: (config: SessionConfig) => void;
+}
+```
+
+**职责**: 完整的交互式 Setup 向导，引导用户完成 6 步配置流程，替代 App 内部的分散 Setup 逻辑。
+
+**6 步流程** (`SetupPhase`):
+
+| 步骤 | Phase | 内部组件 | 说明 |
+|------|-------|---------|------|
+| 1 | `select-dir` | `DirectoryPicker` | 选择项目目录 |
+| 2 | `select-coder` | `CLISelector` | 选择 Coder CLI |
+| 3 | `select-reviewer` | `CLISelector` | 选择 Reviewer CLI（排除已选 Coder） |
+| 4 | `select-god` | `GodSelector` | 选择 God adapter |
+| 5 | `enter-task` | `TaskInput` | 输入任务描述 |
+| 6 | `confirm` | `ConfirmScreen` | 确认配置并启动 |
+
+**内部子组件**:
+
+- **BrandHeader** — 渲染 ASCII art logo（`Duo`）+ 版本号，cyan 加粗
+- **ProgressStepper** — 6 步进度指示器，使用 `●`（已完成，绿色）/ `◉`（当前，cyan）/ `○`（未来，灰色）图标，步骤间用 `─` 连接
+- **CLISelector** — 通用 CLI 选择器，过滤已安装的 CLI，支持 `exclude` 排除已选项，上下箭头 + Enter 选择
+- **GodSelector** — God adapter 专用选择器，显示 `"Same as Reviewer"` 选项（如果 reviewer 支持作为 God），推荐 `claude-code`（标记 `★ recommended`），提示 God 以 stateless + tools disabled 模式运行
+- **TaskInput** — 任务描述输入，`▸` 前缀，Enter 提交
+- **ConfirmScreen** — 配置确认面板，圆角灰色边框，显示 Project/Coder/Reviewer/God/Task 五项配置，God 与 Reviewer 相同时显示 `(same as Reviewer)`，Enter 启动 / Esc 返回
+
+**导出常量**:
+- `PHASE_LABELS` — 各步骤标签映射
+- `PHASE_ORDER` — 步骤顺序数组
+- `SAME_AS_REVIEWER` — God 选择中 "Same as Reviewer" 的特殊标记值
+
+---
+
+### 21. TaskAnalysisCard.tsx — God 任务分析卡片
+
+**来源**: FR-001a (AC-004, AC-005, AC-006, AC-007)
+
+**Props**:
+
+```ts
+interface TaskAnalysisCardProps {
+  analysis: GodTaskAnalysis;
+  onConfirm: (taskType: string) => void;
+  onTimeout: () => void;
+}
+```
+
+**职责**: 显示 God 的任务分析结果，让用户确认或修改任务类型。支持 8 秒倒计时自动确认。
+
+**关键行为**:
+- 使用 `task-analysis-card.ts` 的纯状态函数管理选择、倒计时和确认
+- **国际化**: 自动检测 CJK 字符（`analysis.reasoning`），选择中文或英文界面
+- **倒计时**: 8 秒，1 秒 interval tick；箭头键导航时暂停；超时自动确认
+- **任务类型列表**: 6 种类型（explore/code/discuss/review/debug/compound），God 推荐类型标记 `★ recommended` / `★ 推荐`
+- **置信度显示**: `Confidence: N%`、`Rounds: N`、`Criteria: ...`
+- **键盘**:
+  - `1-6` 数字键直接选中并确认
+  - `↑/↓` 移动选择并暂停倒计时
+  - `Enter` 确认当前选择
+  - `Space` 确认 God 推荐类型
+- **Header**: 显示 `◈ TASK ANALYSIS` / `◈ 任务分析` + 状态（confirmed/paused/auto-start: Ns）
+- **任务摘要**: 截取 `analysis.reasoning` 前 60 字符
+- **样式**: cyan 圆角边框
+- **回调保护**: 使用 `confirmedRef` 确保 `onConfirm` 只触发一次；超时时额外触发 `onTimeout`
 
 ---
 
@@ -578,6 +740,8 @@ SessionRunner 使用以下 `useEffect` 管理副作用：
 | `Ctrl+I` | 打开/关闭 Context 上下文摘要 overlay | 始终可用 |
 | `Ctrl+V` | 切换 Minimal/Verbose 显示模式 | 始终可用 |
 | `Ctrl+T` | 打开/关闭 Timeline 事件时间线 overlay | 始终可用 |
+| `Ctrl+G` | 打开/关闭 God 控制面板 overlay | 始终可用 |
+| `Ctrl+R` | 重分类任务类型 | 始终可用（受 workflow state 限制） |
 | `Ctrl+L` | 清屏（保留历史，记录 clearedCount） | 始终可用 |
 | `j` / `↓` | 向下滚动 1 行 | 无 overlay 且输入为空 |
 | `k` / `↑` | 向上滚动 1 行 | 无 overlay 且输入为空 |
@@ -596,3 +760,6 @@ SessionRunner 使用以下 `useEffect` 管理副作用：
 | `r` | Review Changes（查看变更） | ConvergenceCard |
 | `d` | Decide manually（手动决策） | DisagreementCard |
 | `b` | Accept Reviewer's（接受 Reviewer 方案） | DisagreementCard |
+| `Space` | 立即执行/确认 | GodDecisionBanner / PhaseTransitionBanner / TaskAnalysisCard |
+| `1-6` | 快速选择任务类型 | TaskAnalysisCard / ReclassifyOverlay |
+| `R/S/F/P` | God overlay 手动干预 | God Overlay (Ctrl+G) |

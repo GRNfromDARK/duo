@@ -1,34 +1,56 @@
+/**
+ * WorkflowMachine tests — adapted for Card D.1 Observe → Decide → Act topology.
+ *
+ * Old states removed: ROUTING_POST_CODE, ROUTING_POST_REVIEW, EVALUATING
+ * New flow: CODING → OBSERVING → GOD_DECIDING → EXECUTING → CODING/REVIEWING/DONE
+ */
 import { describe, it, expect } from 'vitest';
 import { createActor } from 'xstate';
 import {
   workflowMachine,
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
+import type { Observation } from '../../types/observation.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 
 /** Helper: create an actor and start it */
 function startActor(context?: Partial<WorkflowContext>) {
-  const machine = context
-    ? workflowMachine.provide({
-        // Override initial context via input
-      })
-    : workflowMachine;
-  const actor = createActor(machine, {
-    input: context,
-  });
+  const actor = createActor(workflowMachine, { input: context });
   actor.start();
   return actor;
 }
 
-/** Helper: send START_TASK and skip TASK_INIT (for tests that don't need TASK_INIT behavior) */
+/** Helper: send START_TASK and skip TASK_INIT */
 function sendStartAndSkipInit(actor: ReturnType<typeof startActor>, prompt: string) {
   actor.send({ type: 'START_TASK', prompt });
   actor.send({ type: 'TASK_INIT_SKIP' });
 }
 
+function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+}
+
+function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
+  return {
+    diagnosis: { summary: 'test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
+    authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+    actions,
+    messages: [{ target: 'system_log', content: 'log' }],
+  };
+}
+
+/** Helper: advance from CODING through full Observe→Decide→Act cycle */
+function advanceFromCoding(
+  actor: ReturnType<typeof startActor>,
+  actions: GodDecisionEnvelope['actions'],
+) {
+  actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+  actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+  actor.send({ type: 'DECISION_READY', envelope: makeEnvelope(actions) });
+  actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
+}
+
 describe('WorkflowMachine', () => {
-  // ──────────────────────────────────────────────
-  // AC-1: State machine definition compiles, all states/events/guards correct
-  // ──────────────────────────────────────────────
   describe('AC-1: definition correctness', () => {
     it('should start in IDLE state', () => {
       const actor = startActor();
@@ -44,6 +66,9 @@ describe('WorkflowMachine', () => {
       expect(ctx.consecutiveRouteToCoder).toBe(0);
       expect(ctx.activeProcess).toBeNull();
       expect(ctx.lastError).toBeNull();
+      expect(ctx.currentObservations).toEqual([]);
+      expect(ctx.lastDecision).toBeNull();
+      expect(ctx.incidentCount).toBe(0);
       actor.stop();
     });
 
@@ -54,10 +79,7 @@ describe('WorkflowMachine', () => {
     });
   });
 
-  // ──────────────────────────────────────────────
-  // AC-2: Normal flow IDLE → CODING → REVIEWING → EVALUATING → CODING (loop)
-  // ──────────────────────────────────────────────
-  describe('AC-2: normal flow', () => {
+  describe('AC-2: normal flow (Observe → Decide → Act)', () => {
     it('IDLE → TASK_INIT → CODING on START_TASK + TASK_INIT_SKIP', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'build feature X' });
@@ -68,217 +90,117 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('CODING → ROUTING_POST_CODE on CODE_COMPLETE', () => {
+    it('CODING → OBSERVING on CODE_COMPLETE', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done coding' });
-      expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
       actor.stop();
     });
 
-    it('ROUTING_POST_CODE → REVIEWING on ROUTE_TO_REVIEW', () => {
+    it('OBSERVING → GOD_DECIDING on OBSERVATIONS_READY', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done coding' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+      actor.stop();
+    });
+
+    it('GOD_DECIDING → EXECUTING on DECISION_READY', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+      actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_reviewer', message: 'review' }]) });
+      expect(actor.getSnapshot().value).toBe('EXECUTING');
+      actor.stop();
+    });
+
+    it('EXECUTING → REVIEWING on send_to_reviewer', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
       expect(actor.getSnapshot().value).toBe('REVIEWING');
       actor.stop();
     });
 
-    it('ROUTING_POST_CODE → GOD_DECIDING on CHOICE_DETECTED', () => {
+    it('REVIEWING → OBSERVING on REVIEW_COMPLETE', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done coding' });
-      actor.send({ type: 'CHOICE_DETECTED', choices: ['A', 'B'] });
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      actor.stop();
-    });
-
-    it('REVIEWING → ROUTING_POST_REVIEW on REVIEW_COMPLETE', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
       actor.send({ type: 'REVIEW_COMPLETE', output: 'looks good' });
-      expect(actor.getSnapshot().value).toBe('ROUTING_POST_REVIEW');
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
       actor.stop();
     });
 
-    it('ROUTING_POST_REVIEW → EVALUATING on ROUTE_TO_EVALUATE', () => {
+    it('GOD_DECIDING → DONE via accept_task', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'looks good' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      expect(actor.getSnapshot().value).toBe('EVALUATING');
-      actor.stop();
-    });
-
-    it('ROUTING_POST_REVIEW → CODING on ROUTE_TO_CODER', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      actor.stop();
-    });
-
-    it('EVALUATING → CODING on NOT_CONVERGED (round < maxRounds)', () => {
-      const actor = startActor({ maxRounds: 10 });
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'NOT_CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.round).toBe(1);
-      actor.stop();
-    });
-
-    it('EVALUATING → GOD_DECIDING on CONVERGED', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      actor.stop();
-    });
-
-    it('EVALUATING → GOD_DECIDING on NOT_CONVERGED when maxRounds reached', () => {
-      const actor = startActor({ maxRounds: 1, round: 1 });
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'NOT_CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      actor.stop();
-    });
-
-    it('GOD_DECIDING → CODING on USER_CONFIRM continue', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'CONVERGED' });
-      actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      actor.stop();
-    });
-
-    it('GOD_DECIDING → DONE on USER_CONFIRM accept', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'CONVERGED' });
-      actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+      advanceFromCoding(actor, [{ type: 'accept_task', rationale: 'reviewer_aligned', summary: 'done' }]);
       expect(actor.getSnapshot().value).toBe('DONE');
       actor.stop();
     });
 
-    it('full loop: IDLE → TASK_INIT → CODING → REVIEWING → EVALUATING → CODING → ... → DONE', () => {
+    it('full loop: code → review → iterate → accept', () => {
       const actor = startActor();
-
-      // Round 1
       actor.send({ type: 'START_TASK', prompt: 'build it' });
-      expect(actor.getSnapshot().value).toBe('TASK_INIT');
       actor.send({ type: 'TASK_INIT_SKIP' });
-      expect(actor.getSnapshot().value).toBe('CODING');
 
-      actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      // Round 0: code → review
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
       expect(actor.getSnapshot().value).toBe('REVIEWING');
 
+      // Review → iterate back to coder
       actor.send({ type: 'REVIEW_COMPLETE', output: 'needs fix' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      expect(actor.getSnapshot().value).toBe('EVALUATING');
-
-      actor.send({ type: 'NOT_CONVERGED' });
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
+      actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'fix' }]) });
+      actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
       expect(actor.getSnapshot().value).toBe('CODING');
       expect(actor.getSnapshot().context.round).toBe(1);
 
-      // Round 2
-      actor.send({ type: 'CODE_COMPLETE', output: 'v2' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'good' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'CONVERGED' });
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-      actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+      // Round 1: accept
+      advanceFromCoding(actor, [{ type: 'accept_task', rationale: 'reviewer_aligned', summary: 'done' }]);
       expect(actor.getSnapshot().value).toBe('DONE');
-      expect(actor.getSnapshot().context.round).toBe(1);
-
       actor.stop();
     });
+
     it('GOD_DECIDING → MANUAL_FALLBACK on MANUAL_FALLBACK_REQUIRED', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: '[APPROVED]' });
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor.send({ type: 'CONVERGED' });
-
-      actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+      actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
       expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
       actor.stop();
     });
   });
 
-  // ──────────────────────────────────────────────
-  // AC-3: Serialization/deserialization roundtrip
-  // ──────────────────────────────────────────────
   describe('AC-3: serialization roundtrip', () => {
     it('should serialize and restore state correctly', () => {
       const actor1 = startActor();
       sendStartAndSkipInit(actor1, 'serialize test');
       actor1.send({ type: 'CODE_COMPLETE', output: 'v1' });
-      actor1.send({ type: 'ROUTE_TO_REVIEW' });
 
-      // Serialize
       const snapshot = actor1.getPersistedSnapshot();
       actor1.stop();
 
-      // Restore
-      const actor2 = createActor(workflowMachine, {
-        snapshot,
-        input: {},
-      });
+      const actor2 = createActor(workflowMachine, { snapshot, input: {} });
       actor2.start();
 
-      expect(actor2.getSnapshot().value).toBe('REVIEWING');
+      expect(actor2.getSnapshot().value).toBe('OBSERVING');
       expect(actor2.getSnapshot().context.taskPrompt).toBe('serialize test');
 
-      // Continue from restored state
-      actor2.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor2.send({ type: 'ROUTE_TO_EVALUATE' });
-      expect(actor2.getSnapshot().value).toBe('EVALUATING');
-
+      actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+      expect(actor2.getSnapshot().value).toBe('GOD_DECIDING');
       actor2.stop();
     });
 
     it('should preserve context through serialization', () => {
       const actor1 = startActor({ maxRounds: 3 });
       sendStartAndSkipInit(actor1, 'ctx test');
-      actor1.send({ type: 'CODE_COMPLETE', output: 'v1' });
-      actor1.send({ type: 'ROUTE_TO_REVIEW' });
-      actor1.send({ type: 'REVIEW_COMPLETE', output: 'fix' });
-      actor1.send({ type: 'ROUTE_TO_EVALUATE' });
-      actor1.send({ type: 'NOT_CONVERGED' });
+      // Go through one full cycle
+      advanceFromCoding(actor1, [{ type: 'send_to_coder', message: 'iterate' }]);
 
       const snapshot = actor1.getPersistedSnapshot();
       actor1.stop();
@@ -290,14 +212,10 @@ describe('WorkflowMachine', () => {
       expect(actor2.getSnapshot().context.maxRounds).toBe(3);
       expect(actor2.getSnapshot().context.taskPrompt).toBe('ctx test');
       expect(actor2.getSnapshot().value).toBe('CODING');
-
       actor2.stop();
     });
   });
 
-  // ──────────────────────────────────────────────
-  // AC-4: Only 1 LLM process at a time (concurrency safety)
-  // ──────────────────────────────────────────────
   describe('AC-4: concurrency safety', () => {
     it('should track active process: set in CODING, clear on CODE_COMPLETE', () => {
       const actor = startActor();
@@ -312,8 +230,7 @@ describe('WorkflowMachine', () => {
     it('should track active process: set in REVIEWING, clear on REVIEW_COMPLETE', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
       expect(actor.getSnapshot().context.activeProcess).toBe('reviewer');
 
       actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
@@ -324,37 +241,26 @@ describe('WorkflowMachine', () => {
     it('should not allow START_TASK when already in CODING', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'first');
-      expect(actor.getSnapshot().value).toBe('CODING');
-
-      // Sending START_TASK again should be ignored (no valid transition)
       actor.send({ type: 'START_TASK', prompt: 'second' });
       expect(actor.getSnapshot().value).toBe('CODING');
       expect(actor.getSnapshot().context.taskPrompt).toBe('first');
       actor.stop();
     });
 
-    it('activeProcess is null in routing/evaluating states', () => {
+    it('activeProcess is null in OBSERVING/GOD_DECIDING/EXECUTING states', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
       actor.send({ type: 'CODE_COMPLETE', output: 'done' });
       expect(actor.getSnapshot().context.activeProcess).toBeNull();
-      expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
       expect(actor.getSnapshot().context.activeProcess).toBeNull();
-      expect(actor.getSnapshot().value).toBe('ROUTING_POST_REVIEW');
-
-      actor.send({ type: 'ROUTE_TO_EVALUATE' });
-      expect(actor.getSnapshot().context.activeProcess).toBeNull();
-      expect(actor.getSnapshot().value).toBe('EVALUATING');
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
   });
 
-  // ──────────────────────────────────────────────
-  // AC-5: Exception paths (ERROR, TIMEOUT)
-  // ──────────────────────────────────────────────
   describe('AC-5: exception paths', () => {
     it('CODING → ERROR on PROCESS_ERROR', () => {
       const actor = startActor();
@@ -378,8 +284,7 @@ describe('WorkflowMachine', () => {
     it('REVIEWING → ERROR on PROCESS_ERROR', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
       actor.send({ type: 'PROCESS_ERROR', error: 'reviewer crash' });
       expect(actor.getSnapshot().value).toBe('ERROR');
       expect(actor.getSnapshot().context.lastError).toBe('reviewer crash');
@@ -389,8 +294,7 @@ describe('WorkflowMachine', () => {
     it('REVIEWING → ERROR on TIMEOUT', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
       actor.send({ type: 'TIMEOUT' });
       expect(actor.getSnapshot().value).toBe('ERROR');
       actor.stop();
@@ -405,56 +309,38 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('CODING → INTERRUPTED on USER_INTERRUPT', () => {
+    // Card E.1: adapted — interrupts go through INCIDENT_DETECTED → OBSERVING, not USER_INTERRUPT → INTERRUPTED
+    it('CODING + INCIDENT_DETECTED → OBSERVING (replaces USER_INTERRUPT → INTERRUPTED)', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'USER_INTERRUPT' });
-      expect(actor.getSnapshot().value).toBe('INTERRUPTED');
+      actor.send({ type: 'INCIDENT_DETECTED', observation: makeObs('human_interrupt', 'human') });
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
       expect(actor.getSnapshot().context.activeProcess).toBeNull();
       actor.stop();
     });
 
-    it('REVIEWING → INTERRUPTED on USER_INTERRUPT', () => {
+    it('REVIEWING + INCIDENT_DETECTED → OBSERVING (replaces USER_INTERRUPT → INTERRUPTED)', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'USER_INTERRUPT' });
-      expect(actor.getSnapshot().value).toBe('INTERRUPTED');
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
+      actor.send({ type: 'INCIDENT_DETECTED', observation: makeObs('human_interrupt', 'human') });
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
       actor.stop();
     });
 
-    it('INTERRUPTED → CODING on USER_INPUT with resume_as=coder', () => {
+    // Card E.2: adapted — request_user_input now routes to CLARIFYING, user input via OBSERVATIONS_READY
+    it('CLARIFYING + OBSERVATIONS_READY → GOD_DECIDING (replaces USER_INPUT direct resume)', () => {
       const actor = startActor();
       sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'USER_INTERRUPT' });
-      actor.send({ type: 'USER_INPUT', input: 'continue', resumeAs: 'coder' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      actor.stop();
-    });
-
-    it('INTERRUPTED → REVIEWING on USER_INPUT with resume_as=reviewer', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'USER_INTERRUPT' });
-      actor.send({ type: 'USER_INPUT', input: 'review', resumeAs: 'reviewer' });
-      expect(actor.getSnapshot().value).toBe('REVIEWING');
-      actor.stop();
-    });
-
-    it('INTERRUPTED → GOD_DECIDING on USER_INPUT with resume_as=decision', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'USER_INTERRUPT' });
-      actor.send({ type: 'USER_INPUT', input: 'decide', resumeAs: 'decision' });
+      // Get to CLARIFYING via God request_user_input
+      advanceFromCoding(actor, [{ type: 'request_user_input', question: 'what?' }]);
+      expect(actor.getSnapshot().value).toBe('CLARIFYING');
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('clarification_answer', 'human')] });
       expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
       actor.stop();
     });
   });
 
-  // ──────────────────────────────────────────────
-  // Session resumption (RESUME_SESSION)
-  // ──────────────────────────────────────────────
   describe('session resumption', () => {
     it('IDLE → RESUMING on RESUME_SESSION', () => {
       const actor = startActor();
@@ -488,151 +374,6 @@ describe('WorkflowMachine', () => {
     });
   });
 
-  // ──────────────────────────────────────────────
-  // test_regression_bug1: ROUTING_POST_REVIEW → ROUTE_TO_CODER respects maxRounds
-  // ──────────────────────────────────────────────
-  describe('test_regression_bug1: ROUTING_POST_REVIEW maxRounds guard', () => {
-    it('ROUTING_POST_REVIEW → GOD_DECIDING on ROUTE_TO_CODER when maxRounds reached', () => {
-      const actor = startActor({ maxRounds: 1, round: 1 });
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-      // round (1) >= maxRounds (1), should go to GOD_DECIDING not CODING
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      actor.stop();
-    });
-
-    it('ROUTING_POST_REVIEW → CODING on ROUTE_TO_CODER when rounds available', () => {
-      const actor = startActor({ maxRounds: 5, round: 0 });
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.round).toBe(1);
-      actor.stop();
-    });
-
-    it('ROUTING_POST_REVIEW guard blocks exactly at maxRounds boundary', () => {
-      const actor = startActor({ maxRounds: 3, round: 3 });
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'issues' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      // round should NOT have been incremented
-      expect(actor.getSnapshot().context.round).toBe(3);
-      actor.stop();
-    });
-  });
-
-  // ──────────────────────────────────────────────
-  // test_regression_bug_r12_4: PHASE_TRANSITION saves event data to context
-  // ──────────────────────────────────────────────
-  describe('test_regression_bug_r12_4: PHASE_TRANSITION assigns pendingPhaseId', () => {
-    it('PHASE_TRANSITION saves nextPhaseId and summary to context', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'compound task');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done phase 1' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'phase 1 complete' });
-      actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p2', summary: 'Moving to implementation phase' });
-
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      expect(actor.getSnapshot().context.pendingPhaseId).toBe('p2');
-      expect(actor.getSnapshot().context.pendingPhaseSummary).toBe('Moving to implementation phase');
-      actor.stop();
-    });
-
-    it('pendingPhaseId is null initially', () => {
-      const actor = startActor();
-      expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
-      expect(actor.getSnapshot().context.pendingPhaseSummary).toBeNull();
-      actor.stop();
-    });
-
-    it('pendingPhaseId survives serialization roundtrip', () => {
-      const actor1 = startActor();
-      sendStartAndSkipInit(actor1, 'test');
-      actor1.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor1.send({ type: 'ROUTE_TO_REVIEW' });
-      actor1.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor1.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p3', summary: 'Final review' });
-
-      const snapshot = actor1.getPersistedSnapshot();
-      actor1.stop();
-
-      const actor2 = createActor(workflowMachine, { snapshot, input: {} });
-      actor2.start();
-
-      expect(actor2.getSnapshot().value).toBe('GOD_DECIDING');
-      expect(actor2.getSnapshot().context.pendingPhaseId).toBe('p3');
-      expect(actor2.getSnapshot().context.pendingPhaseSummary).toBe('Final review');
-      actor2.stop();
-    });
-  });
-
-  // ──────────────────────────────────────────────
-  // test_bug_r14_1: pendingPhaseId consumed on USER_CONFIRM continue
-  // ──────────────────────────────────────────────
-  describe('test_bug_r14_1: pendingPhaseId consumed on USER_CONFIRM continue', () => {
-    it('should consume pendingPhaseId and clear it when user confirms continue', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'compound task');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done phase 1' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'phase 1 complete' });
-      actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p2', summary: 'Implementation phase' });
-
-      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      expect(actor.getSnapshot().context.pendingPhaseId).toBe('p2');
-
-      // User confirms continue — pendingPhaseId should be consumed and cleared
-      actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
-      expect(actor.getSnapshot().context.pendingPhaseSummary).toBeNull();
-      actor.stop();
-    });
-
-    it('should update taskPrompt with phase info when pendingPhaseId is consumed', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'original task');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p2', summary: 'Deploy phase' });
-
-      actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-      expect(actor.getSnapshot().context.taskPrompt).toContain('p2');
-      // BUG-16 fix: taskPrompt preserves original task, not God's reasoning
-      expect(actor.getSnapshot().context.taskPrompt).toContain('original task');
-      actor.stop();
-    });
-
-    it('should NOT modify taskPrompt when no pendingPhaseId on continue', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'simple task');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-      actor.send({ type: 'CONVERGED' });
-
-      // No PHASE_TRANSITION, so pendingPhaseId is null
-      actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-      expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.taskPrompt).toBe('simple task');
-      actor.stop();
-    });
-  });
-
-  // ──────────────────────────────────────────────
-  // AC-A2: TASK_INIT state — God intent parsing entry point
-  // ──────────────────────────────────────────────
   describe('AC-A2: TASK_INIT state', () => {
     it('IDLE → TASK_INIT on START_TASK', () => {
       const actor = startActor();
@@ -676,7 +417,7 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('full flow through TASK_INIT: IDLE → TASK_INIT → CODING → ...', () => {
+    it('full flow through TASK_INIT: IDLE → TASK_INIT → CODING → OBSERVING', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'build it' });
       expect(actor.getSnapshot().value).toBe('TASK_INIT');
@@ -686,8 +427,7 @@ describe('WorkflowMachine', () => {
       expect(actor.getSnapshot().context.maxRounds).toBe(6);
 
       actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      expect(actor.getSnapshot().value).toBe('REVIEWING');
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
       actor.stop();
     });
 
@@ -696,7 +436,6 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'START_TASK', prompt: 'test' });
       expect(actor.getSnapshot().value).toBe('TASK_INIT');
 
-      // These should be ignored in TASK_INIT
       actor.send({ type: 'CODE_COMPLETE', output: 'bogus' });
       expect(actor.getSnapshot().value).toBe('TASK_INIT');
 
@@ -707,8 +446,95 @@ describe('WorkflowMachine', () => {
   });
 
   // ──────────────────────────────────────────────
-  // Invalid transitions (should be ignored)
+  // Card E.1: Interrupt → Observation normalization (state machine)
   // ──────────────────────────────────────────────
+  describe('E.1: interrupt observation normalization', () => {
+    it('CODING should NOT transition on USER_INTERRUPT (stays in CODING)', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      actor.send({ type: 'USER_INTERRUPT' });
+      // E.1: USER_INTERRUPT removed from CODING — interrupts go through INCIDENT_DETECTED
+      expect(actor.getSnapshot().value).toBe('CODING');
+      actor.stop();
+    });
+
+    it('REVIEWING should NOT transition on USER_INTERRUPT (stays in REVIEWING)', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
+      actor.send({ type: 'USER_INTERRUPT' });
+      // E.1: USER_INTERRUPT removed from REVIEWING
+      expect(actor.getSnapshot().value).toBe('REVIEWING');
+      actor.stop();
+    });
+
+    it('CODING + INCIDENT_DETECTED with human_interrupt → OBSERVING', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      actor.send({
+        type: 'INCIDENT_DETECTED',
+        observation: makeObs('human_interrupt', 'human'),
+      });
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
+      actor.stop();
+    });
+
+    it('REVIEWING + INCIDENT_DETECTED with human_message → OBSERVING', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      advanceFromCoding(actor, [{ type: 'send_to_reviewer', message: 'review' }]);
+      actor.send({
+        type: 'INCIDENT_DETECTED',
+        observation: makeObs('human_message', 'human'),
+      });
+      expect(actor.getSnapshot().value).toBe('OBSERVING');
+      actor.stop();
+    });
+
+    // Card E.2: request_user_input now routes to CLARIFYING
+    it('CLARIFYING + OBSERVATIONS_READY → GOD_DECIDING', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      // Get to CLARIFYING via God request_user_input
+      advanceFromCoding(actor, [{ type: 'request_user_input', question: 'what should I do?' }]);
+      expect(actor.getSnapshot().value).toBe('CLARIFYING');
+
+      // User input as observation routes to GOD_DECIDING
+      actor.send({
+        type: 'OBSERVATIONS_READY',
+        observations: [makeObs('clarification_answer', 'human')],
+      });
+      expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+      actor.stop();
+    });
+
+    it('CLARIFYING + OBSERVATIONS_READY should store observations in context', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      advanceFromCoding(actor, [{ type: 'request_user_input', question: 'details?' }]);
+      expect(actor.getSnapshot().value).toBe('CLARIFYING');
+
+      const obs = makeObs('clarification_answer', 'human');
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [obs] });
+
+      expect(actor.getSnapshot().context.currentObservations).toHaveLength(1);
+      expect(actor.getSnapshot().context.currentObservations[0].type).toBe('clarification_answer');
+      actor.stop();
+    });
+
+    it('CLARIFYING should NOT handle USER_INPUT (no direct resume)', () => {
+      const actor = startActor();
+      sendStartAndSkipInit(actor, 'test');
+      advanceFromCoding(actor, [{ type: 'request_user_input', question: 'what?' }]);
+      expect(actor.getSnapshot().value).toBe('CLARIFYING');
+
+      // USER_INPUT should be ignored — user input goes through observation pipeline
+      actor.send({ type: 'USER_INPUT', input: 'continue', resumeAs: 'coder' });
+      expect(actor.getSnapshot().value).toBe('CLARIFYING');
+      actor.stop();
+    });
+  });
+
   describe('invalid transitions', () => {
     it('should ignore CODE_COMPLETE when not in CODING', () => {
       const actor = startActor();
@@ -724,63 +550,59 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('should ignore CONVERGED when not in EVALUATING', () => {
+    it('should ignore OBSERVATIONS_READY when not in OBSERVING', () => {
       const actor = startActor();
-      actor.send({ type: 'CONVERGED' });
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
       expect(actor.getSnapshot().value).toBe('IDLE');
       actor.stop();
     });
 
-    it('should ignore USER_CONFIRM when not in GOD_DECIDING', () => {
+    it('should ignore DECISION_READY when not in GOD_DECIDING', () => {
       const actor = startActor();
-      actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+      actor.send({ type: 'DECISION_READY', envelope: makeEnvelope() });
       expect(actor.getSnapshot().value).toBe('IDLE');
       actor.stop();
     });
   });
 
-  describe('retry circuit breaker', () => {
-    it('increments consecutiveRouteToCoder when looping back to coding', () => {
-      const actor = startActor({ consecutiveRouteToCoder: 0 } as Partial<WorkflowContext>);
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-      actor.send({ type: 'REVIEW_COMPLETE', output: 'fix this' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-
-      expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(1);
-      actor.stop();
-    });
-
-    it('does not reset consecutiveRouteToCoder merely by reaching review', () => {
+  // ── Regression: INTERRUPTED state deadlock (P1 bug) ──
+  describe('regression: INTERRUPTED state accepts OBSERVATIONS_READY', () => {
+    it('INTERRUPTED + OBSERVATIONS_READY → GOD_DECIDING (not deadlocked)', () => {
       const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
+      // Get to INTERRUPTED via RESUMING → RESTORED_TO_INTERRUPTED
+      actor.send({ type: 'RESUME_SESSION', sessionId: 'sess-1' });
+      actor.send({ type: 'RESTORED_TO_INTERRUPTED' });
+      expect(actor.getSnapshot().value).toBe('INTERRUPTED');
 
-      actor.send({ type: 'CODE_COMPLETE', output: 'retry-1' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      actor.send({ type: 'CODE_COMPLETE', output: 'retry-2' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-      actor.send({ type: 'ROUTE_TO_REVIEW' });
-
-      expect(actor.getSnapshot().value).toBe('REVIEWING');
-      expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(2);
-      actor.stop();
-    });
-
-    it('breaks the loop after 3 consecutive ROUTE_TO_CODER decisions', () => {
-      const actor = startActor();
-      sendStartAndSkipInit(actor, 'test');
-      actor.send({ type: 'CODE_COMPLETE', output: 'retry-1' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      actor.send({ type: 'CODE_COMPLETE', output: 'retry-2' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-      actor.send({ type: 'CODE_COMPLETE', output: 'retry-3' });
-      actor.send({ type: 'ROUTE_TO_CODER' });
-
+      // User input as observation should transition to GOD_DECIDING
+      actor.send({
+        type: 'OBSERVATIONS_READY',
+        observations: [makeObs('clarification_answer', 'human')],
+      });
       expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-      expect(actor.getSnapshot().context.consecutiveRouteToCoder).toBe(0);
+      actor.stop();
+    });
+
+    it('INTERRUPTED stores observations in context on OBSERVATIONS_READY', () => {
+      const actor = startActor();
+      actor.send({ type: 'RESUME_SESSION', sessionId: 'sess-1' });
+      actor.send({ type: 'RESTORED_TO_INTERRUPTED' });
+
+      const obs = makeObs('clarification_answer', 'human');
+      actor.send({ type: 'OBSERVATIONS_READY', observations: [obs] });
+
+      expect(actor.getSnapshot().context.currentObservations).toEqual([obs]);
+      actor.stop();
+    });
+
+    it('USER_INPUT is silently dropped in INTERRUPTED (no transition)', () => {
+      const actor = startActor();
+      actor.send({ type: 'RESUME_SESSION', sessionId: 'sess-1' });
+      actor.send({ type: 'RESTORED_TO_INTERRUPTED' });
+
+      // USER_INPUT should NOT cause a transition — this confirms the bug existed
+      actor.send({ type: 'USER_INPUT', input: 'hello', resumeAs: 'coder' });
+      expect(actor.getSnapshot().value).toBe('INTERRUPTED');
       actor.stop();
     });
   });

@@ -1,11 +1,14 @@
 /**
  * God audit log — append-only JSONL log for God decisions.
  * Source: FR-020 (AC-051, AC-052), NFR-008
+ * Card F.2: FR-018 (Decision Audit Must Explain God), NFR-002, NFR-006
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, statSync } from 'fs';
 import { writeFileSync } from 'node:fs';
 import { join } from 'path';
+import type { GodDecisionEnvelope } from '../types/god-envelope.js';
+import type { Observation } from '../types/observation.js';
 
 export interface GodAuditEntry {
   seq: number;
@@ -148,6 +151,242 @@ export class GodAuditLogger {
       return 0;
     }
   }
+}
+
+/**
+ * Log a reviewer override/aligned audit entry.
+ * Card D.2: FR-002, FR-010 — tracks reviewer original conclusion + God final verdict.
+ *
+ * @param logger - GodAuditLogger instance
+ * @param params - reviewer observation, God envelope, round
+ */
+export function logReviewerOverrideAudit(
+  logger: GodAuditLogger,
+  params: {
+    round: number;
+    reviewerObservation: { summary: string; rawRef?: string };
+    envelope: {
+      authority: { reviewerOverride: boolean; acceptAuthority: string };
+      diagnosis: { summary: string; notableObservations: string[] };
+      messages: Array<{ target: string; content: string }>;
+      actions: unknown[];
+    };
+  },
+): void {
+  const { round, reviewerObservation, envelope } = params;
+
+  // Extract reviewer verdict from observation text
+  const verdictMatch = /\[(APPROVED|CHANGES_REQUESTED)\]/.exec(
+    reviewerObservation.rawRef ?? reviewerObservation.summary,
+  );
+  const reviewerVerdict = verdictMatch ? verdictMatch[1] : 'unknown';
+
+  const isOverride = envelope.authority.reviewerOverride;
+  const godVerdict = envelope.authority.acceptAuthority;
+
+  // Extract override reason from system_log messages
+  const systemLogMessages = envelope.messages
+    .filter(m => m.target === 'system_log')
+    .map(m => m.content);
+  const overrideReason = systemLogMessages.join('; ') || null;
+
+  logger.append({
+    timestamp: new Date().toISOString(),
+    round,
+    decisionType: isOverride ? 'reviewer_override' : 'reviewer_aligned',
+    inputSummary: `Reviewer verdict: ${reviewerVerdict} — ${reviewerObservation.summary}`.slice(0, 500),
+    outputSummary: `God verdict: ${godVerdict}${isOverride ? ' (override)' : ''}`.slice(0, 500),
+    decision: {
+      reviewerVerdict,
+      godVerdict,
+      overrideReason,
+      envelope,
+    },
+  });
+}
+
+/**
+ * Log an incident response audit entry.
+ * Card F.1: FR-014, FR-015 — tracks incident observation + God diagnosis + decision + execution result.
+ */
+export function logIncidentAudit(
+  logger: GodAuditLogger,
+  params: {
+    round: number;
+    incidentObservation: {
+      type: string;
+      summary: string;
+      severity: string;
+      source: string;
+      rawRef?: string;
+    };
+    envelope: {
+      diagnosis: { summary: string; currentGoal: string; currentPhaseId: string; notableObservations: string[] };
+      authority: { userConfirmation: string; reviewerOverride: boolean; acceptAuthority: string };
+      actions: Array<{ type: string; [key: string]: unknown }>;
+      messages: Array<{ target: string; content: string }>;
+    };
+    executionResults: Array<{ type: string; summary: string; severity: string; [key: string]: unknown }>;
+  },
+): void {
+  const { round, incidentObservation, envelope, executionResults } = params;
+  const actionTypes = envelope.actions.map(a => a.type).join(', ');
+
+  logger.append({
+    timestamp: new Date().toISOString(),
+    round,
+    decisionType: 'incident_response',
+    inputSummary: `Incident: ${incidentObservation.type} (${incidentObservation.severity}) — ${incidentObservation.summary}`.slice(0, 500),
+    outputSummary: `God response: ${actionTypes || 'no actions'} — ${envelope.diagnosis.summary}`.slice(0, 500),
+    decision: {
+      incidentType: incidentObservation.type,
+      incidentSeverity: incidentObservation.severity,
+      incidentSource: incidentObservation.source,
+      diagnosis: envelope.diagnosis.summary,
+      actions: envelope.actions,
+      executionResults: executionResults.map(r => ({ type: r.type, summary: r.summary, severity: r.severity })),
+    },
+  });
+}
+
+// ── Reviewer verdict extraction (reuse from god-decision-service.ts pattern) ──
+
+const VERDICT_PATTERN = /\[(APPROVED|CHANGES_REQUESTED)\]/;
+
+function extractReviewerVerdictFromObs(obs: Observation): string {
+  if (obs.source !== 'reviewer' || obs.type !== 'review_output') return 'unknown';
+  const text = obs.rawRef ?? obs.summary;
+  const match = VERDICT_PATTERN.exec(text);
+  return match ? match[1] : 'unknown';
+}
+
+// ── Card F.2: Enhanced Envelope Decision Audit ──
+
+export interface EnvelopeDecisionParams {
+  round: number;
+  observations: Observation[];
+  envelope: GodDecisionEnvelope;
+  executionResults: Observation[];
+}
+
+/**
+ * Log a complete God decision with full envelope context.
+ * Card F.2: FR-018 — every critical God decision records:
+ * - Input observations (summary + severity + type)
+ * - God diagnosis
+ * - Authority override details
+ * - Chosen actions
+ * - NL messages
+ * - Action execution results
+ *
+ * Override tracking (NFR-002):
+ * - userConfirmation = 'god_override' → records override reason
+ * - reviewerOverride = true → records reviewer original conclusion + override reason
+ */
+export function logEnvelopeDecision(
+  logger: GodAuditLogger,
+  params: EnvelopeDecisionParams,
+): void {
+  const { round, observations, envelope, executionResults } = params;
+
+  // Build human-readable inputSummary (NFR-006)
+  const obsSummaries = observations.map(o => `${o.type}(${o.severity})`);
+  const inputSummary = `Observations: ${obsSummaries.join(', ')}`;
+
+  // Build human-readable outputSummary (NFR-006)
+  const actionTypes = envelope.actions.map(a => a.type).join(', ');
+  const outputSummary = `${envelope.diagnosis.summary} → ${actionTypes || 'no actions'}`;
+
+  // Build override tracking (NFR-002)
+  const overrides = buildOverrideTracking(envelope, observations);
+
+  // Build structured decision payload (AC-5)
+  const decision: Record<string, unknown> = {
+    observations: observations.map(o => ({
+      type: o.type,
+      severity: o.severity,
+      summary: o.summary,
+    })),
+    diagnosis: envelope.diagnosis,
+    authority: envelope.authority,
+    actions: envelope.actions,
+    messages: envelope.messages,
+    executionResults: executionResults.map(r => ({
+      type: r.type,
+      summary: r.summary,
+      severity: r.severity,
+    })),
+  };
+
+  // Only include overrides section when there are actual overrides
+  if (overrides) {
+    decision.overrides = overrides;
+  }
+
+  // Store full archive in god-decisions/
+  const fullOutput = {
+    envelope,
+    observations,
+    executionResults,
+  };
+
+  logger.append(
+    {
+      timestamp: new Date().toISOString(),
+      round,
+      decisionType: 'god_decision',
+      inputSummary,
+      outputSummary,
+      decision,
+      phaseId: envelope.diagnosis.currentPhaseId,
+    },
+    fullOutput,
+  );
+}
+
+/**
+ * Build override tracking from envelope authority.
+ * Returns null if no overrides are present (standard authority).
+ */
+function buildOverrideTracking(
+  envelope: GodDecisionEnvelope,
+  observations: Observation[],
+): Record<string, unknown> | null {
+  const { authority, messages } = envelope;
+
+  const hasUserOverride = authority.userConfirmation === 'god_override';
+  const hasReviewerOverride = authority.reviewerOverride;
+
+  if (!hasUserOverride && !hasReviewerOverride) return null;
+
+  // Extract system_log messages as override reasons
+  const systemLogMessages = messages
+    .filter(m => m.target === 'system_log')
+    .map(m => m.content);
+  const overrideReason = systemLogMessages.join('; ') || null;
+
+  const result: Record<string, unknown> = {};
+
+  if (hasUserOverride) {
+    result.userConfirmationOverride = true;
+    result.userConfirmationOverrideReason = overrideReason;
+  }
+
+  if (hasReviewerOverride) {
+    // Find reviewer observation to extract original conclusion
+    const reviewerObs = observations.find(
+      o => o.source === 'reviewer' && o.type === 'review_output',
+    );
+    const originalConclusion = reviewerObs
+      ? extractReviewerVerdictFromObs(reviewerObs)
+      : 'unknown';
+
+    result.reviewerOverride = true;
+    result.reviewerOriginalConclusion = originalConclusion;
+    result.reviewerOverrideReason = overrideReason;
+  }
+
+  return result;
 }
 
 /**

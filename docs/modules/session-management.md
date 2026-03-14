@@ -1,367 +1,282 @@
 # 会话管理模块
 
-> 来源需求：FR-001 (AC-001 ~ AC-004), FR-002 (AC-005 ~ AC-008), FR-003 (AC-009 ~ AC-011)
+> 源文件: `src/session/session-starter.ts` | `src/session/session-manager.ts` | `src/session/context-manager.ts`
+>
+> 需求追溯: FR-001 (AC-001 ~ AC-004), FR-002 (AC-005 ~ AC-008), FR-003 (AC-009 ~ AC-011)
 
-## 模块职责
+---
 
-会话管理模块负责 Duo 会话的**完整生命周期**——从创建、验证，到持久化存储、状态恢复，再到 Prompt 构建与上下文窗口管理。模块由三个文件组成：
+## 1. 模块概览
 
-- **session-starter** — 会话创建与参数验证
-- **session-manager** — 会话持久化、原子写入、恢复与列表
-- **context-manager** — Prompt 模板管理、历史摘要、上下文窗口控制
+会话管理模块负责 Duo 会话的完整生命周期：**创建与校验** (`session-starter`) → **持久化与恢复** (`session-manager`) → **Prompt 构建** (`context-manager`)。三者协作确保会话状态在进程崩溃后仍可恢复，并为 Coder / Reviewer LLM 提供结构化的 prompt。
 
-## 涉及文件
+---
 
-| 文件 | 说明 |
+## 2. Session Starter
+
+### 2.1 CLI 参数解析
+
+`parseStartArgs(argv)` 从命令行 argv 中提取 `StartArgs`：
+
+| 参数 | 说明 |
 |------|------|
-| `src/session/session-starter.ts` | 会话启动核心逻辑（参数解析、验证、配置生成） |
-| `src/session/session-manager.ts` | **NEW** — 会话持久化引擎（原子写入、snapshot、JSONL history） |
-| `src/session/context-manager.ts` | **NEW** — Prompt 模板管理、轮次摘要、上下文窗口管理 |
-| `src/types/session.ts` | 会话相关的 TypeScript 类型定义 |
+| `--dir` | 项目目录（默认 `process.cwd()`） |
+| `--coder` | Coder CLI 名称（必填） |
+| `--reviewer` | Reviewer CLI 名称（必填） |
+| `--god` | God adapter 名称（可选） |
+| `--task` | 任务描述（必填） |
+
+### 2.2 项目目录校验
+
+`validateProjectDir(dir)` 执行两级检查：
+
+1. **可访问性** — 通过 `fs.access(R_OK)` 验证目录存在且可读。
+2. **Git 仓库** — 调用 `git rev-parse --is-inside-work-tree`。非 Git 目录不会报错，但会产生 warning（部分 CLI 如 Codex 要求 Git 仓库）。
+
+### 2.3 CLI 选择校验
+
+`validateCLIChoices(coder, reviewer, detected, god?)` 保证：
+
+- Coder 和 Reviewer **不能是同一个** CLI 工具。
+- 每个角色对应的 CLI 必须已注册 (`DetectedCLI[]`) 且已安装。
+- 若指定 `--god`，验证其为受支持的 God adapter（当前支持 `claude-code`、`codex`）。
+
+### 2.4 SessionConfig 创建
+
+`createSessionConfig(args, detected)` 是入口函数，串联上述校验后返回 `StartResult`：
+
+- 校验通过 → `config` 包含完整的 `SessionConfig`（projectDir / coder / reviewer / god / task）。
+- 校验失败 → `config` 为 `null`，`validation.errors` 包含所有错误信息。
+- 始终返回 `detectedCLIs`（已安装的 CLI 名称列表），供 UI 展示。
+
+God adapter 解析由 `resolveGodAdapterForStart` 处理，失败时追加 error。
 
 ---
 
-## session-starter.ts — 会话创建与验证
+## 3. Session Manager
 
-### `parseStartArgs(argv: string[]): StartArgs`
-
-解析 CLI 命令行参数，将 `argv` 数组转换为结构化的 `StartArgs` 对象。
-
-支持的参数：
-
-| 参数 | 字段 | 说明 |
-|------|------|------|
-| `--dir` | `dir` | 项目目录路径 |
-| `--coder` | `coder` | 编码者 CLI 工具名称 |
-| `--reviewer` | `reviewer` | 审查者 CLI 工具名称 |
-| `--task` | `task` | 任务描述 |
-
-所有字段均为可选（`StartArgs` 各属性类型为 `string | undefined`），缺失的必填字段会在后续 `createSessionConfig()` 中被捕获。
-
-### `validateProjectDir(dir: string): Promise<ValidationResult>`
-
-异步验证项目目录，检查两个维度：
-
-1. **存在性与可访问性** — 使用 `fs/promises.access()` 检查 `R_OK` 权限。若目录不存在或不可读，立即返回 `valid: false`。
-2. **Git 仓库状态** — 通过 `git rev-parse --is-inside-work-tree` 判断。非 Git 目录不会阻止会话创建，但会产生 warning。
-
-### `validateCLIChoices(coder, reviewer, detected): ValidationResult`
-
-验证 coder 和 reviewer CLI 工具选择的合法性。检查三条规则：
-
-| 规则 | 错误信息 |
-|------|----------|
-| coder 和 reviewer 不能是同一个工具 | `Coder and reviewer cannot be the same CLI tool.` |
-| 工具必须存在于已注册的 CLI 列表中 | `{Role} CLI '{name}' not found in registry.` |
-| 工具必须已安装 | `{Role} CLI '{displayName}' is not installed.` |
-
-当 coder 与 reviewer 相同时，函数立即返回，不再检查后续规则。
-
-### `createSessionConfig(args, detected): Promise<StartResult>`
-
-编排整个验证流程的入口函数，依次执行：
-
-1. **必填字段检查** — `--coder`、`--reviewer`、`--task` 缺一不可
-2. **目录验证** — 调用 `validateProjectDir()`，未提供 `--dir` 时默认使用 `process.cwd()`
-3. **CLI 工具验证** — 仅在 coder 和 reviewer 都已提供时调用
-4. **汇总结果** — 收集所有 errors/warnings，返回 `StartResult`
-
-返回值包含 `config`（成功时为 `SessionConfig`，失败时为 `null`）、`validation` 和 `detectedCLIs`。
-
----
-
-## session-manager.ts — 会话持久化引擎（NEW）
-
-> 来源需求：FR-002 (AC-005, AC-006, AC-007, AC-008)
-
-### 核心设计
-
-SessionManager 管理 `.duo/sessions/<id>/` 目录下的会话数据，提供**崩溃安全**的持久化能力。
-
-#### 数据接口
-
-| 接口 | 说明 |
-|------|------|
-| `SessionMetadata` | 会话元数据：`id`, `projectDir`, `coder`, `reviewer`, `task`, `createdAt`, `updatedAt` |
-| `SessionState` | 运行时状态：`round`, `status`, `currentRole`, `coderSessionId?`, `reviewerSessionId?` |
-| `SessionSnapshot` | 合并快照：`{ metadata, state }`，是 snapshot.json 的完整结构 |
-| `HistoryEntry` | 历史条目：`round`, `role`, `content`, `timestamp` |
-| `LoadedSession` | 加载结果：`{ metadata, state, history }` |
-| `SessionSummary` | 列表摘要：用于 `listSessions()` 返回值 |
-
-#### 错误类型
-
-| 类 | 触发场景 |
-|----|----------|
-| `SessionNotFoundError` | 会话目录不存在 |
-| `SessionCorruptedError` | 会话文件存在但数据结构无效（JSON 解析失败、字段缺失等） |
-
-### 原子写入策略（write-tmp-rename）
-
-`atomicWriteSync(filePath, data)` 实现了经典的**先写临时文件再重命名**策略：
-
-1. 将数据写入 `{filePath}.tmp`
-2. 调用 `fs.renameSync()` 原子替换目标文件
-3. Windows 兼容：若 rename 失败，先 unlink 目标文件再重试
-
-这确保了在写入过程中崩溃时，目标文件要么是旧版本完整数据，要么是新版本完整数据，不会出现半写状态。
-
-### 核心方法
-
-#### `createSession(config: SessionConfig): { id: string }`
-
-创建新会话：
-
-1. 生成 UUID 作为会话 ID
-2. 创建 `.duo/sessions/<id>/` 目录
-3. 原子写入 snapshot.json（metadata + 初始 state `{ round: 0, status: 'created', currentRole: 'coder' }`）
-4. 创建空的 history.jsonl
-5. 同时写入旧格式文件（session.json, state.json, history.json）保持向后兼容
-
-#### `saveState(sessionId: string, state: SessionState): void`
-
-保存会话状态：
-
-1. 加载当前 snapshot
-2. 更新 `state` 和 `metadata.updatedAt`（使用 `Math.max(now, updatedAt) + 1` 保证单调递增）
-3. **单次原子写入** snapshot.json 同时更新 metadata 和 state
-4. 同步更新旧格式文件
-
-#### `addHistoryEntry(sessionId: string, entry: HistoryEntry): void`
-
-追加历史条目：
-
-1. 若 history.jsonl 不存在但 history.json 存在，先执行**迁移**（逐行转换）
-2. 使用 `fs.appendFileSync()` 追加一行 JSON（**仅追加，无 read-modify-write 竞态**）
-3. 同步更新旧格式 history.json
-
-#### `loadSession(sessionId: string): LoadedSession`
-
-加载完整会话：
-
-1. 检查会话目录是否存在，不存在则抛出 `SessionNotFoundError`
-2. 加载 snapshot（优先 snapshot.json，回退到 session.json + state.json）
-3. 加载 history（优先 history.jsonl，回退到 history.json）
-4. 任何非 `SessionNotFoundError` 的异常包装为 `SessionCorruptedError`
-
-#### `listSessions(): SessionSummary[]`
-
-列出所有会话，按 `updatedAt` 降序排列。跳过损坏或不完整的会话目录。
-
-#### `validateSessionRestore(sessionId: string): RestoreValidation`
-
-验证会话是否可恢复——检查 `projectDir` 是否仍然存在。
-
-### 文件格式与兼容
-
-**新格式（权威）：**
-
-| 文件 | 格式 | 说明 |
-|------|------|------|
-| `snapshot.json` | JSON | metadata + state 合并快照，原子写入 |
-| `history.jsonl` | JSONL（每行一条 JSON） | 仅追加的历史记录，崩溃容忍最后一行截断 |
-
-**旧格式（向后兼容，只读回退）：**
-
-| 文件 | 格式 | 说明 |
-|------|------|------|
-| `session.json` | JSON | 仅 metadata |
-| `state.json` | JSON | 仅 state |
-| `history.json` | JSON Array | 完整历史数组 |
-
-加载时优先读取新格式；新格式不存在时回退到旧格式。写入时同时更新两种格式，确保过渡期兼容。
-
-### 数据完整性验证
-
-- `isValidSnapshot()` — 类型守卫，检查 snapshot 对象的完整字段结构
-- `isValidHistoryEntry()` — 类型守卫，检查单条历史条目的字段
-- JSONL 加载时，**最后一行**的截断/损坏会被容忍并跳过（视为崩溃产物），中间行损坏则抛出异常
-
----
-
-## context-manager.ts — Prompt 模板管理（NEW）
-
-> 来源需求：FR-003 (AC-009, AC-010, AC-011)
-
-### 核心设计
-
-ContextManager 负责为 Coder 和 Reviewer LLM 构建结构化的 Prompt，管理轮次历史的摘要与裁剪，确保 Prompt 始终在上下文窗口预算内。
-
-#### 配置接口
-
-| 接口 | 说明 |
-|------|------|
-| `ContextManagerOptions` | `contextWindowSize`（上下文窗口大小）、`promptsDir?`（自定义模板目录） |
-| `RoundRecord` | 轮次记录：`index`, `coderOutput`, `reviewerOutput`, `summary?`, `timestamp` |
-| `CoderPromptOptions` | 可选参数：`reviewerFeedback?`, `interruptInstruction?`, `skipHistory?` |
-| `ReviewerPromptOptions` | 可选参数：`interruptInstruction?`, `skipHistory?`, `roundNumber?`, `previousReviewerOutput?` |
-
-#### 常量
-
-| 常量 | 值 | 说明 |
-|------|------|------|
-| `CHARS_PER_TOKEN` | 4 | 近似 token 估算比例 |
-| `MAX_SUMMARY_TOKENS` | 200 | 单轮摘要最大 token 数 |
-| `RECENT_ROUNDS_COUNT` | 3 | 保留完整内容的最近轮次数 |
-| `BUDGET_RATIO` | 0.8 | 上下文窗口利用率上限（80%） |
-
-### Prompt 模板系统
-
-#### 模板加载
-
-构造时从 `promptsDir`（默认 `.duo/prompts/`）加载自定义模板：
-
-- `coder.md` — Coder Prompt 模板
-- `reviewer.md` — Reviewer Prompt 模板
-
-文件不存在时回退到内置默认模板。
-
-#### `resolveTemplate(template, vars)` — 单次遍历占位符替换
-
-使用 `template.replace(/\{\{(\w+)\}\}/g, ...)` 进行**单次遍历**替换。关键设计：替换值中包含的 `{{...}}` 标记**不会被二次解析**，避免了注入风险。这是 P0-1 修复的核心改进。
-
-支持的占位符：`{{task}}`、`{{history}}`、`{{reviewerFeedback}}`、`{{interruptInstruction}}`、`{{coderOutput}}`、`{{roundNumber}}`、`{{previousFeedbackChecklist}}`。未匹配的占位符保持原样。
-
-### 核心方法
-
-#### `buildCoderPrompt(task, rounds, opts?): string`
-
-构建 Coder Prompt：
-
-1. 构建历史区段（可通过 `skipHistory` 跳过）
-2. 组装 reviewer 反馈区段和中断指令区段
-3. 通过 `resolveTemplate()` 填充模板
-4. 通过 `enforceTokenBudget()` 裁剪超限内容
-
-默认模板核心指令：
-- 不要提问，自主决策，直接实现
-- 只关注任务，不修改无关代码
-- 逐一解决 Reviewer 反馈并简要说明修复内容
-
-#### `buildReviewerPrompt(task, rounds, coderOutput, opts?): string`
-
-构建 Reviewer Prompt：
-
-1. 构建历史区段
-2. 构建中断指令区段
-3. 如有上轮 Reviewer 输出，通过 `buildPreviousFeedbackChecklist()` 生成逐项验证清单
-4. 填充模板并裁剪
-
-默认模板的审查输出格式要求：
-- **Progress Checklist** — 逐项标注上轮问题修复状态（`[x] Fixed` / `[ ] Still open`）
-- **New Issues** — 新发现的问题，标注 Location / Problem / Fix，分类为 Blocking 或 Non-blocking
-- **Blocking Issue Count** — 明确写出 `Blocking: N`
-- **Verdict** — `[APPROVED]` 或 `[CHANGES_REQUESTED]`
-
-#### `generateSummary(text: string): string`
-
-生成轮次摘要（≤200 tokens）：
-
-1. 文本长度在限制内则原样返回
-2. 尝试 `extractKeyPoints()` 提取结构化关键信息（verdict 标记、Blocking/Non-blocking 分类、编号列表项）
-3. 回退到字符截断（使用 `Array.from()` 避免截断多字节字符）
-
-#### `buildHistorySection(rounds: RoundRecord[]): string`
-
-构建历史区段，采用**近详远略**策略：
-
-- **最近 3 轮** — 完整内容（Coder 输出 + Reviewer 输出）
-- **更早的轮次** — 仅保留摘要（已有 `summary` 字段或即时生成）
-
-#### `enforceTokenBudget(prompt: string): string`
-
-上下文窗口控制：按 `contextWindowSize × 0.8` 计算最大字符数，超限时截断。使用 `Array.from()` 按完整字符截断以保护多字节序列。
-
-### 上轮反馈清单构建
-
-`buildPreviousFeedbackChecklist(previousOutput)` 解析上轮 Reviewer 输出中的结构化问题：
-
-1. `extractGroupedIssues()` 将多行问题（Location / Problem / Fix）合并为单条摘要
-2. 支持编号格式（`1. **Location**: ...`）和 bullet 格式（`- **Blocking**: ...`）
-3. 生成编号清单，指示 Reviewer 逐项验证修复状态
-
----
-
-## `.duo/` 目录结构详解
+### 3.1 `.duo/` 目录结构
 
 ```
 .duo/
 ├── sessions/
 │   └── <uuid>/
-│       ├── snapshot.json    # 权威源：metadata + state 合并快照
-│       ├── history.jsonl    # 仅追加的历史记录（每行一条 JSON）
-│       ├── session.json     # [旧格式] 仅 metadata
-│       ├── state.json       # [旧格式] 仅 state
-│       └── history.json     # [旧格式] 完整历史数组
-└── prompts/                 # 自定义 Prompt 模板（可选）
+│       ├── snapshot.json      ← 权威源：metadata + state 合并快照
+│       ├── history.jsonl      ← 对话历史（append-only，每行一条 JSON）
+│       ├── session.json       ← Legacy：仅 metadata
+│       ├── state.json         ← Legacy：仅 state
+│       └── history.json       ← Legacy：JSON 数组格式
+└── prompts/                   ← 自定义 Prompt 模板（可选）
     ├── coder.md
     └── reviewer.md
 ```
 
-`.duo/` 目录通常应被加入 `.gitignore`。
+**新会话同时写入新格式和 Legacy 文件**，以保证过渡期的向后兼容。读取时优先使用 `snapshot.json` / `history.jsonl`，不存在时自动 fallback 到 Legacy 文件。
+
+### 3.2 核心数据模型
+
+**SessionMetadata** — 不可变元信息：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | `string` | UUID |
+| `projectDir` | `string` | 项目目录路径 |
+| `coder` | `string` | Coder CLI 名称 |
+| `reviewer` | `string` | Reviewer CLI 名称 |
+| `god` | `string?` | God adapter 名称 |
+| `task` | `string` | 任务描述 |
+| `createdAt` | `number` | 创建时间戳 |
+| `updatedAt` | `number` | 最后更新时间戳 |
+
+**SessionState** — 可变运行状态：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `round` | `number` | 当前轮次 |
+| `status` | `string` | 会话状态 |
+| `currentRole` | `string` | 当前执行角色 |
+| `coderSessionId` | `string?` | Coder adapter 的 CLI session ID |
+| `reviewerSessionId` | `string?` | Reviewer adapter 的 CLI session ID |
+| `godSessionId` | `string?` | Legacy God session ID（运行时恢复已禁用） |
+| `godTaskAnalysis` | `GodTaskAnalysis?` | God 任务分析（首轮写入，FR-011） |
+| `godConvergenceLog` | `ConvergenceLogEntry[]?` | God 收敛日志（每轮追加，摘要限 200 字符） |
+| `degradationState` | `DegradationState?` | God 降级状态（用于 resume） |
+| `currentPhaseId` | `string \| null?` | 复合任务当前阶段 ID |
+
+**HistoryEntry** — 单条对话记录：`round`, `role`, `content`, `timestamp`。
+
+### 3.3 Atomic Writes（原子写入）
+
+`atomicWriteSync(filePath, data)` 实现写入安全：
+
+1. 先写入 `<filePath>.tmp` 临时文件。
+2. 调用 `fs.renameSync` 将 `.tmp` 原子替换目标文件。
+3. Windows 兼容：`rename` 失败时先 `unlink` 再重试。
+
+所有 `saveState` 和 `addHistoryEntry`（Legacy 部分）调用都通过此函数，确保即使进程在写入过程中崩溃，文件也不会处于半写状态。
+
+### 3.4 Monotonic Timestamp
+
+`monotonicNow()` 保证同一 Manager 实例内时间戳严格递增。当同一毫秒内多次调用时，自动 +1，避免排序冲突。实现：`this._lastTs = Math.max(now, this._lastTs + 1)`。
+
+### 3.5 会话创建
+
+`createSession(config)` 流程：
+
+1. 生成 UUID 作为 session ID。
+2. 创建 `.duo/sessions/<id>/` 目录。
+3. 写入 `snapshot.json`（atomic）+ 空 `history.jsonl`。
+4. 同时写入 Legacy 文件（`session.json` / `state.json` / `history.json`）。
+5. 初始状态：`round=0, status='created', currentRole='coder'`。
+
+### 3.6 状态更新
+
+`saveState(sessionId, partialState)` 采用 merge 语义：
+
+1. 加载当前 snapshot。
+2. 将 `partialState` 浅合并到 `state`。
+3. 更新 `metadata.updatedAt`。
+4. Atomic write `snapshot.json` + Legacy 文件。
+
+### 3.7 历史追加
+
+`addHistoryEntry(sessionId, entry)` 使用 append-only 策略：
+
+- **JSONL 格式**：直接 `fs.appendFileSync`，无需读-改-写，天然避免竞态。
+- **Legacy 迁移**：如果 `history.jsonl` 不存在但 `history.json` 存在，首次追加时自动迁移。
+- 同时更新 Legacy `history.json`（通过 atomic write）保持向后兼容。
+
+### 3.8 会话加载与恢复
+
+`loadSession(sessionId)` 返回完整的 `LoadedSession`（metadata + state + history）。
+
+**Snapshot 加载优先级**：`snapshot.json` → Legacy `session.json` + `state.json`。通过 `isValidSnapshot` type guard 做结构校验。
+
+**History 加载优先级**：`history.jsonl` → Legacy `history.json`。
+
+**恢复校验**：`validateSessionRestore(sessionId)` 检查项目目录是否仍然存在。
+
+### 3.9 会话列表
+
+`listSessions()` 扫描 sessions 目录，跳过损坏的子目录，按 `updatedAt` 降序排列返回 `SessionSummary[]`。
+
+### 3.10 错误类型
+
+| 错误类 | 触发条件 |
+|--------|---------|
+| `SessionNotFoundError` | session 目录不存在 |
+| `SessionCorruptedError` | snapshot 或 history 数据损坏（包装原始异常为 `cause`） |
 
 ---
 
-## 验证规则总表
+## 4. Context Manager
 
-| 阶段 | 规则 | 级别 | 影响 |
-|------|------|------|------|
-| 必填字段 | `--coder` 未提供 | Error | 阻止会话创建 |
-| 必填字段 | `--reviewer` 未提供 | Error | 阻止会话创建 |
-| 必填字段 | `--task` 未提供 | Error | 阻止会话创建 |
-| 目录验证 | 目录不存在或不可读 | Error | 阻止会话创建 |
-| 目录验证 | 目录不是 Git 仓库 | Warning | 允许继续，但提醒用户 |
-| CLI 验证 | coder 与 reviewer 相同 | Error | 阻止会话创建 |
-| CLI 验证 | 工具未在注册表中 | Error | 阻止会话创建 |
-| CLI 验证 | 工具未安装 | Error | 阻止会话创建 |
-| 会话恢复 | 项目目录不再存在 | Error | 阻止恢复 |
-| Snapshot 加载 | JSON 解析失败或字段缺失 | Error | 抛出 `SessionCorruptedError` |
-| History 加载 | 中间行损坏 | Error | 抛出 `SessionCorruptedError` |
-| History 加载 | 最后一行截断 | Warning | 跳过该行，正常加载 |
+### 4.1 Prompt Template 系统
+
+Context Manager 在初始化时加载两套 prompt template：
+
+- **Coder template** — 从 `.duo/prompts/coder.md` 加载，不存在时使用内置默认模板。
+- **Reviewer template** — 从 `.duo/prompts/reviewer.md` 加载，同上。
+
+`.duo/prompts/` 目录路径通过 `ContextManagerOptions.promptsDir` 配置，默认值由 `getDefaultTemplatesDir()` 返回。
+
+### 4.2 resolveTemplate 机制
+
+`resolveTemplate(template, vars)` 采用**单次正则替换**策略：
+
+```typescript
+template.replace(/\{\{(\w+)\}\}/g, (match, key) => vars[key] ?? match)
+```
+
+核心设计：一次遍历完成所有占位符替换，替换值中包含的 `{{...}}` **不会被二次解析**，避免注入风险。未匹配的占位符保持原样。
+
+支持的占位符：
+
+| Coder Template | Reviewer Template |
+|----------------|-------------------|
+| `{{task}}` | `{{task}}` |
+| `{{history}}` | `{{history}}` |
+| `{{reviewerFeedback}}` | `{{coderOutput}}` |
+| `{{interruptInstruction}}` | `{{interruptInstruction}}` |
+| — | `{{roundNumber}}` |
+| — | `{{previousFeedbackChecklist}}` |
+
+### 4.3 Coder Prompt 构建
+
+`buildCoderPrompt(task, rounds, opts?)` 生成 Coder 的系统 prompt：
+
+- 注入任务描述、历史记录、Reviewer 反馈。
+- 核心指令：**不要提问，自主决策，直接实现**。
+- 要求 Coder 逐一处理 Reviewer 指出的问题并简要说明修复内容。
+- 可通过 `skipHistory` 跳过历史注入，通过 `interruptInstruction` 注入中断指令。
+
+### 4.4 Reviewer Prompt 构建
+
+`buildReviewerPrompt(task, rounds, coderOutput, opts?)` 生成 Reviewer 的系统 prompt：
+
+- 包含当前轮次编号 `roundNumber`（默认为 `rounds.length + 1`）。
+- 注入上一轮 Reviewer 反馈的结构化 checklist（`previousFeedbackChecklist`）。
+- 要求 Reviewer 产出固定格式：Progress Checklist → New Issues → Blocking Count → Verdict。
+- Verdict 只能是 `[APPROVED]` 或 `[CHANGES_REQUESTED]`。
+- 明确禁止因非阻塞性建议而拒绝通过。
+- 审查范围限定：只针对任务要求审查，不审查无关已有代码；不重复提出已修复的问题。
+
+### 4.5 Previous Feedback Checklist
+
+当存在上一轮 Reviewer 输出时，`buildPreviousFeedbackChecklist` 从中提取结构化问题列表：
+
+1. `extractGroupedIssues` 解析 Reviewer 输出，识别编号问题组（Location / Problem / Fix）和 bullet 问题项。
+2. 跳过代码块、heading、verdict marker、`Blocking: N` 计数行。
+3. 将多行问题组合并为 `[classification] location — problem` 格式。
+4. 注入为 checklist，要求 Reviewer 在新一轮逐项标注 `[x] Fixed` 或 `[ ] Still open`。
+
+### 4.6 历史区段构建
+
+`buildHistorySection(rounds)` 实现 **sliding window** 策略：
+
+- **最近 3 轮**（`RECENT_ROUNDS_COUNT=3`）：完整内容（Coder + Reviewer 原文）。
+- **更早轮次**：使用 summary 压缩（已有 `summary` 字段或即时调用 `generateSummary` 生成）。
+
+### 4.7 Summary 生成
+
+`generateSummary(text)` 在文本超过 200 token（约 800 字符）时压缩：
+
+1. 优先尝试 `extractKeyPoints` — 提取 verdict marker、blocking/non-blocking 分类行、编号问题项、修复状态 header。
+2. 提取结果仍超长时，按完整字符（`Array.from()` 避免断裂多字节序列）截断并追加 `...`。
+
+### 4.8 Token Budget 控制
+
+`enforceTokenBudget(prompt)` 确保最终 prompt 不超过 context window 的 80%：
+
+- 估算公式：`maxChars = contextWindowSize * 4 * 0.8`（1 token ≈ 4 字符）。
+- 超出时按完整字符截断（`Array.from()` 保护多字节序列）。
 
 ---
 
-## 崩溃一致性策略
+## 5. Crash Consistency 策略
 
 Duo 采用 **snapshot 为权威源** 的崩溃恢复策略：
 
-1. **snapshot.json 是唯一权威** — metadata 和 state 合并存储在一个文件中，通过 write-tmp-rename 原子写入。崩溃时 snapshot.json 要么是旧版本（完整），要么是新版本（完整）。
-2. **history.jsonl 仅追加** — 使用 `appendFileSync` 逐行追加，不存在 read-modify-write 竞态。崩溃可能导致最后一行截断，加载时自动跳过。
-3. **旧格式为冗余备份** — 过渡期同时维护旧格式文件，但加载优先读取新格式。即使旧格式文件损坏，只要新格式完整即可正常恢复。
-4. **updatedAt 单调递增** — `saveState()` 使用 `Math.max(now, updatedAt) + 1` 确保时间戳严格递增，避免时钟回拨导致的排序异常。
+| 机制 | 说明 |
+|------|------|
+| **Atomic write (write-tmp-rename)** | `snapshot.json` 崩溃时要么是旧版本完整数据，要么是新版本完整数据，不会出现半写状态 |
+| **JSONL append-only** | `history.jsonl` 使用 `appendFileSync` 逐行追加，不存在 read-modify-write 竞态 |
+| **最后一行容错** | JSONL 最后一行若 JSON 解析失败或结构不合法，视为崩溃残留，仅跳过并打印 warning |
+| **中间行严格** | 文件中间行出现损坏则抛出 `SessionCorruptedError`，不容忍非尾部数据损坏 |
+| **Legacy 双写** | 过渡期同时维护旧格式文件，但加载优先读取新格式。即使旧格式文件损坏，新格式完整即可恢复 |
+| **Monotonic timestamp** | `monotonicNow()` 确保时间戳严格递增，避免时钟回拨导致的排序异常 |
+| **Type guard 校验** | `isValidSnapshot` / `isValidHistoryEntry` 在加载时验证数据结构完整性 |
 
 ---
 
-## 数据流向
+## 6. 关键设计决策
 
-```
-CLI argv
-  │
-  ▼
-parseStartArgs() → StartArgs
-  │
-  ▼
-createSessionConfig() → SessionConfig
-  │
-  ▼
-SessionManager.createSession() → session ID + snapshot.json + history.jsonl
-  │
-  ▼
-ContextManager.buildCoderPrompt() → Coder Prompt（含历史摘要）
-  │                                        │
-  │                                        ▼
-  │                                  LLM 执行 → 输出
-  │                                        │
-  │                                        ▼
-  │                           SessionManager.addHistoryEntry()
-  │                           SessionManager.saveState()
-  │                                        │
-  │                                        ▼
-  └──────────────── ContextManager.buildReviewerPrompt() → Reviewer Prompt
-                                           │
-                                           ▼
-                                     LLM 审查 → 输出
-                                           │
-                                           ▼
-                              下一轮循环或收敛终止
-```
+| 决策 | 理由 |
+|------|------|
+| Atomic write + rename | 防止进程崩溃导致文件半写损坏 |
+| JSONL append-only history | 避免 read-modify-write 竞态，对长会话友好 |
+| 单次 resolveTemplate | 防止模板注入，替换值中的 `{{}}` 不被二次解析 |
+| Legacy 双写 | 过渡期向后兼容，读取优先新格式 |
+| 多字节安全截断 | `Array.from(text)` 按 code point 截断，保护 CJK 字符 |
+| 近 3 轮完整 + 旧轮摘要 | 平衡上下文信息量与 token 预算 |
+| 80% budget ratio | 为 LLM 回复和系统开销预留 20% 空间 |

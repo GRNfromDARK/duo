@@ -50,7 +50,7 @@ Output this exact JSON schema:
 - confidence: 0.0 to 1.0
 - suggestedMaxRounds: integer 1-20 (explore: 2-5, code: 3-10, review: 1-3, debug: 2-6)
 - terminationCriteria: array of strings describing when the task is done
-- phases: null for non-compound tasks. For compound tasks, provide:
+- phases: omit this field or use null for non-compound tasks. For compound tasks, provide:
   \`[{"id": "phase-1", "name": "Phase Name", "type": "explore", "description": "..."}]\`
 
 ## 2. POST_CODER — Route after Coder output
@@ -107,5 +107,6 @@ Output this exact JSON schema:
 3. Base decisions on the context provided in the user prompt.
 4. When uncertain, prefer conservative autonomous actions (extra review round over premature convergence).
 5. You are NEVER allowed to request user input or ask a human to decide.
+6. When using god_override for userConfirmation or acceptAuthority, you MUST include a system_log message explaining the override reason. When using forced_stop for acceptAuthority, you MUST include a user-targeted summary message.
 `;
 }

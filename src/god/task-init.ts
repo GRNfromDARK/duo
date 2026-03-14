@@ -1,6 +1,7 @@
 /**
  * God TASK_INIT service — intent parsing + task classification + dynamic rounds.
  * Source: FR-001 (AC-001, AC-002, AC-003), FR-002 (AC-008, AC-009), FR-007 (AC-023, AC-024)
+ * AI-REVIEW: TASK_INIT 作为 God 意图解析入口，动态 rounds 受 taskType 约束避免失控回环 (FR-003 核心循环)。
  */
 
 import type { GodAdapter } from '../types/god-adapter.js';
@@ -50,6 +51,20 @@ export function applyDynamicRounds(
 /** God calls should respond quickly — timeout after 30s to trigger degradation */
 const GOD_TIMEOUT_MS = 30_000;
 
+function buildTaskInitPrompt(taskPrompt: string): string {
+  return [
+    '## Decision Point: TASK_INIT',
+    'Classify the task below for orchestration planning.',
+    'Do not answer or solve the task itself.',
+    '',
+    '## User Task',
+    taskPrompt,
+    '',
+    'Return only the TASK_INIT JSON described in the system instructions.',
+    'For non-compound tasks, omit "phases" or set it to null.',
+  ].join('\n');
+}
+
 /**
  * Initialize a task via the God adapter: send the task prompt with system prompt,
  * extract and validate the GodTaskAnalysis JSON from the output.
@@ -62,13 +77,25 @@ export async function initializeTask(
   taskPrompt: string,
   systemPrompt: string,
   projectDir?: string,
+  sessionDir?: string,
 ): Promise<TaskInitResult | null> {
+  const prompt = buildTaskInitPrompt(taskPrompt);
   const rawOutput = await collectGodAdapterOutput({
     adapter: godAdapter,
-    prompt: taskPrompt,
+    prompt,
     systemPrompt,
     projectDir,
     timeoutMs: GOD_TIMEOUT_MS,
+    ...(sessionDir
+      ? {
+          logging: {
+            sessionDir,
+            round: 0,
+            kind: 'god_task_init',
+            meta: { attempt: 1 },
+          },
+        }
+      : {}),
   });
 
   const result = await extractWithRetry(
@@ -76,13 +103,23 @@ export async function initializeTask(
     GodTaskAnalysisSchema,
     async (errorHint: string) => {
       // Retry with error hint appended to the prompt
-      const retryPrompt = `${taskPrompt}\n\n[FORMAT ERROR] Your previous output had a schema validation error:\n${errorHint}\n\nPlease output a corrected JSON block.`;
+      const retryPrompt = `${prompt}\n\n[FORMAT ERROR] Your previous output had a schema validation error:\n${errorHint}\n\nPlease output a corrected JSON block.`;
       return collectGodAdapterOutput({
         adapter: godAdapter,
         prompt: retryPrompt,
         systemPrompt,
         projectDir,
         timeoutMs: GOD_TIMEOUT_MS,
+        ...(sessionDir
+          ? {
+              logging: {
+                sessionDir,
+                round: 0,
+                kind: 'god_task_init',
+                meta: { attempt: 2, retryReason: 'schema_validation' },
+              },
+            }
+          : {}),
       });
     },
   );

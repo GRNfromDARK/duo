@@ -10,6 +10,7 @@ export class ClaudeCodeGodAdapter implements GodAdapter {
   readonly name = 'claude-code';
   readonly displayName = 'Claude Code';
   readonly version = '0.0.0';
+  readonly toolUsePolicy = 'forbid' as const;
 
   private processManager: ProcessManager;
   private parser: StreamJsonParser;

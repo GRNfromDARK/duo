@@ -132,7 +132,8 @@ describe('StatusBar — God info display (Card D.2)', () => {
   // Basic status bar elements still work
   it('still shows round and token count', () => {
     const output = renderBar({ round: 3, maxRounds: 10, tokenCount: 5000 });
-    expect(output).toContain('Round 3/10');
+    expect(output).toContain('3/10');
+    expect(output).toMatch(/[█░]/); // progress bar
     expect(output).toContain('5.0ktok');
   });
 

@@ -2,6 +2,7 @@
  * God LLM output Zod schemas.
  * Source: AR-002, OQ-002, OQ-003
  * SPEC-DECISION: Schema field names follow Card A.1 spec (refined from FR-001/004/005/008).
+ * AI-REVIEW: GodDecisionEnvelope 结构对齐 FR-004 (AC-011~013)，action 与 message 分离确保状态变化仅通过 Hand 执行。
  */
 
 import { z } from 'zod';
@@ -18,7 +19,7 @@ export const GodTaskAnalysisSchema = z.object({
     name: z.string(),
     type: TaskTypeSchema,
     description: z.string(),
-  })).optional(), // compound 类型必须有 phases
+  })).nullable().optional(), // compound 类型必须有 phases; non-compound may omit or use null
   confidence: z.number().min(0).max(1),
   suggestedMaxRounds: z.number().int().min(1).max(20),
   terminationCriteria: z.array(z.string()),

@@ -1,191 +1,195 @@
 # 决策引擎模块
 
-> 来源需求：FR-005 (AC-016 ~ AC-019), FR-006 (AC-020 ~ AC-023)
-
-## 模块职责
-
-决策引擎包含两个核心能力：
-
-1. **选择题检测与路由**（ChoiceDetector）— 检测 LLM 输出中的选择题/提问模式，自动路由给对方 LLM 回答，确保工作流不中断
-2. **收敛判定**（ConvergenceService）— 分析 Reviewer 输出，判断代码审查是否已收敛，决定终止或继续迭代
-
-## 涉及文件
-
-| 文件 | 说明 |
-|------|------|
-| `src/decision/choice-detector.ts` | 选择题检测（双重策略）与转发 Prompt 构建 |
-| `src/decision/convergence-service.ts` | **NEW** — 收敛判定、循环检测、进度追踪、终止条件评估 |
+> 源文件: `src/decision/choice-detector.ts` | `src/decision/convergence-service.ts`
+>
+> 需求追溯: FR-005 (AC-016 ~ AC-019), FR-006 (AC-020 ~ AC-023)
 
 ---
 
-## choice-detector.ts — 选择题检测
+## 1. 模块概览
 
-### 双重策略
+决策引擎负责两个核心判断：
 
-决策引擎采用「预防 + 兜底」的双重策略：
+- **Choice Detector** — 检测 LLM 输出中的选择题/提问模式，自动路由给对方 LLM 决策，确保工作流不因提问而中断。
+- **Convergence Service** — 分析 Reviewer 输出，判定收敛状态（通过 / 需修改 / 循环），决定是否终止迭代。
 
-**策略一：System Prompt 指示（预防）** — 通过 ContextManager 在 Coder/Reviewer Prompt 中注入「不要提问，自主决策」的指令，从源头避免 LLM 提出选择题。
+---
 
-**策略二：正则检测（兜底）** — 当 LLM 仍然输出选择题格式内容时，`ChoiceDetector` 通过正则表达式进行拦截。
+## 2. Choice Detector
 
-### 检测逻辑
+### 2.1 设计策略
 
-`ChoiceDetector.detect(text)` 分两步执行：
+采用**两层防线**：
 
-#### 第一步：识别问题行
+1. **系统 prompt 层（预防）**：在 Coder/Reviewer prompt 中注入"不要提问，自主决策"的指令，从源头避免 LLM 提出选择题。
+2. **Regex 检测层（兜底）**：当 LLM 仍然输出选择题格式内容时，`ChoiceDetector` 通过正则表达式拦截并自动代为决策。
 
-扫描所有行（跳过代码块内容），寻找：
+### 2.2 检测条件
+
+`detect(text)` 返回 `ChoiceDetectionResult`，**必须同时满足两个条件才触发**：
+
+1. 存在**问题行** — 以 `?` / `？` 结尾，或包含选择引导词。
+2. 存在**选项列表** — 至少 2 个匹配的选项。
+
+检测前会先过滤 `` ``` `` 包围的代码块内容，避免将代码中的注释或字符串误判为选择题。
+
+### 2.3 问题行识别
+
+两类正则协同工作：
 
 | 模式 | 正则 | 示例 |
 |------|------|------|
 | 问号结尾 | `/^.+[?？]\s*$/` | `你更倾向哪种方案？` |
-| 选择引导短语 | `/\b(options?\|choose\|prefer\|which\|pick\|select\|方案\|选择\|哪[个种])\b/i` | `以下是两个方案：` |
+| 选择引导词 | `/\b(options?\|choose\|prefer\|which\|pick\|select\|方案\|选择\|哪[个种])\b/i` | `以下是两个方案：` |
 
-未找到问题行则直接返回 `{ detected: false, choices: [] }`。
+扫描所有非代码块行，记录**最后一个**匹配的问题行及其行号。
 
-#### 第二步：识别选项列表
+### 2.4 支持的选项模式
 
-从问题行附近（前 2 行到文本末尾）搜索选项，支持以下格式：
-
-| 格式 | 正则 | 匹配示例 |
-|------|------|----------|
-| A/B/C 点号或括号 | `/^([A-C])[.)]\s*(.+)/` | `A. 使用 Redux`、`B) 使用 MobX` |
+| 模式 | 正则 | 示例 |
+|------|------|------|
+| A/B/C 点号或括号 | `/^([A-C])[.)]\s*(.+)/` | `A. 使用 React` |
 | A/B/C 冒号 | `/^([A-C])[:：]\s*(.+)/` | `A: 使用 Redux` |
-| 数字序号 | `/^(\d)[.)]\s*(.+)/` | `1. 方案一`、`2) 方案二` |
-| 方案 X | `/^方案([一二三...]+)[：:.]?\s*(.+)/` | `方案一：重构组件` |
-| Option N | `/^Option\s+(\d+)[：:.]\s*(.+)/i` | `Option 1: Use React` |
-| 无序列表 | `/^[-•*]\s+(.+)/` | `- 使用 TypeScript` |
+| 数字编号 | `/^(\d)[.)]\s*(.+)/` | `1. 方案一` |
+| 中文方案 | `/^方案([一二三...]+)[：:.]?\s*(.+)/` | `方案一：使用 Redux` |
+| Option N | `/^Option\s+(\d+)[：:.]\s*(.+)/i` | `Option 1: Use hooks` |
+| Bullet 列表 | `/^[-•*]\s+(.+)/` | `- 使用 Context API` |
 
-**无序列表的特殊规则：** bullet 格式的选项仅在出现于问题行之后、且长度 < 120 字符时才计入，避免将普通列表误判为选择题。
+**Bullet 列表的特殊处理**：仅在问题行之后出现、且长度 < 120 字符时才视为选项，避免将正常段落误判为选择题。
 
-#### 判定条件
+选项搜索范围：从问题行前 2 行到文本末尾。
 
-必须**同时满足**两个条件：
+### 2.5 Forward Prompt
 
-1. 找到至少一行问题行
-2. 找到**至少 2 个**选项
-
-返回 `ChoiceDetectionResult`：
-
-- `detected: boolean` — 是否检测到选择题
-- `choices: string[]` — 提取出的选项内容列表
-- `question?: string` — 检测到的问题行文本
-
-### `buildForwardPrompt(result, taskContext): string`
-
-当检测到选择题后，构建转发给对方 LLM 的 Prompt：
+`buildForwardPrompt(result, taskContext)` 生成转发给对方 LLM 的决策 prompt：
 
 ```
-Task: {taskContext}
+Task: <任务上下文>
 
 A decision is needed:
-{result.question}
+<原始问题>
 
 Choices:
-1. {choice1}
-2. {choice2}
+1. <选项1>
+2. <选项2>
 ...
 
-Reply with ONLY: the choice number, then one sentence of reasoning. Do not ask questions.
+Reply with ONLY: the choice number, then one sentence of reasoning.
 只回复：选项编号 + 一句话理由。不要提问。
 ```
 
-设计要点：
-- 提供任务上下文，让对方 LLM 有足够信息做出判断
-- 统一编号格式列出所有选项
-- 要求简洁回复（编号 + 一句话理由），便于解析和追溯
-- 问题文本缺失时使用 `(no question text)` 作为兜底
+核心约束：
+- 提供任务上下文，让对方 LLM 有足够信息做出判断。
+- 统一编号格式列出所有选项。
+- 要求对方 LLM **只返回编号 + 一句话理由**，不允许反问，确保决策链路不发散。
+- 问题文本缺失时使用 `(no question text)` 作为兜底。
+
+### 2.6 无状态设计
+
+`ChoiceDetector` 不维护任何对话历史或内部状态，可在工作流任意节点复用。
 
 ---
 
-## convergence-service.ts — 收敛判定（NEW）
+## 3. Convergence Service
 
-> 来源需求：FR-005 (AC-016, AC-017, AC-018, AC-019)
+### 3.1 分类体系
 
-### 核心设计
+`classify(output)` 将 Reviewer 输出分为三类（按优先级）：
 
-ConvergenceService 分析 Reviewer 的输出文本，判断 Coder-Reviewer 迭代是否已收敛，决定是终止工作流还是继续下一轮。
+| Classification | 触发条件 | 含义 |
+|----------------|---------|------|
+| `approved` | 输出中包含 `[APPROVED]` marker | 正式通过 |
+| `soft_approved` | 无 blocking issue + 无 `[CHANGES_REQUESTED]` + 匹配 soft approval 短语 | 语义通过（Reviewer 表达了认可但忘记标记） |
+| `changes_requested` | 其他所有情况 | 需要继续修改（默认分类） |
 
-#### 分类体系
+**关键设计**：只有显式的 `[APPROVED]` marker 才是正式通过。这是保守策略，避免 Reviewer 的客套话被误判为通过。
 
-| 分类 | 含义 | 触发条件 |
-|------|------|----------|
-| `approved` | 明确通过 | 输出包含 `[APPROVED]` 标记 |
-| `soft_approved` | 隐含通过 | 无阻塞问题 + 匹配软通过语句 |
-| `changes_requested` | 需要修改 | 以上两者都不满足（默认分类） |
+### 3.2 Soft Approval 模式
 
-**关键原则：** 只有显式 `[APPROVED]` 标记才触发 `approved` 分类。没有标记时，即使 Reviewer 语气积极，也仅为 `soft_approved` 或 `changes_requested`。
+以下模式触发 `soft_approved`（需同时无 blocking issue 且无 `[CHANGES_REQUESTED]`）：
 
-#### 软通过识别
+**英文**：
+- `LGTM`、`looks good to me`
+- `no (more) issues/problems/concerns/changes`
+- `all issues resolved/fixed/addressed`
+- `ship it`、`ready to merge/ship/deploy`
+- `nothing (else) to fix/change/address`
 
-匹配以下英文/中文模式时（且 blocking issues = 0），分类为 `soft_approved`：
+**中文**：
+- `代码已通过`
+- `没有(更多)问题/意见/修改`
+- `所有问题已修复/解决/处理`
+- `可以合并/提交/部署`
+- `非常好`
 
-- `LGTM`、`looks good to me`、`no more issues`、`all issues resolved`
-- `ship it`、`ready to merge/deploy`、`nothing to fix`
-- `代码已通过`、`没有更多问题`、`所有问题已修复`、`可以合并`、`非常好`
+### 3.3 Blocking Issue 计数
 
-#### 阻塞问题计数
+`countBlockingIssues(output)` 采用两级策略：
 
-`countBlockingIssues(output)` 采用**双层策略**：
+1. **结构化输出**（优先）：匹配 `Blocking: N` 格式行（由 Reviewer prompt template 要求产出）。匹配到后直接返回 N，不再做 heuristic 计数。
+2. **Heuristic fallback**：统计 `**Blocking**`、`**Bug**`、`**Error**`、`**Missing**`、`**Issue**`、`**Problem**` 等 marker 出现次数，减去 `**Non-blocking**` 的数量，下限为 0。
 
-1. **优先：结构化输出** — 匹配 `Blocking: N` 行（来自 Reviewer Prompt 模板的标准格式）
-2. **回退：启发式计数** — 统计 `**Blocking**`、`**Bug**`、`**Error**`、`**Missing**` 等标记出现次数，减去 `**Non-blocking**` 次数
+### 3.4 终止条件
 
-### 终止条件评估
+`evaluate(reviewerOutput, ctx)` 返回 `ConvergenceResult`，按优先级检查以下终止条件：
 
-`evaluate(reviewerOutput, ctx)` 按优先级依次检查：
+| 优先级 | Reason | 条件 | shouldTerminate |
+|--------|--------|------|-----------------|
+| 1 | `approved` | `[APPROVED]` marker | true |
+| 2 | `soft_approved` | Soft approval 模式匹配 | true |
+| 3 | `max_rounds` | `currentRound >= maxRounds`（默认 20） | true |
+| 4 | `loop_detected` | Loop detection 触发 | true |
+| 5 | `diminishing_issues` | blocking count = 0 + trend = improving + 无 `[CHANGES_REQUESTED]` + 至少 2 轮 | true |
+| — | `null` | 以上均不满足 | false（继续迭代） |
 
-| 优先级 | 条件 | `reason` | `shouldTerminate` |
-|--------|------|----------|-------------------|
-| 1 | `[APPROVED]` 标记 | `approved` | `true` |
-| 2 | 软通过（无阻塞 + 通过性语句） | `soft_approved` | `true` |
-| 3 | 当前轮次 ≥ `maxRounds`（默认 20） | `max_rounds` | `true` |
-| 4 | 循环检测命中 | `loop_detected` | `true` |
-| 5 | 问题递减归零（≥2 轮、issue=0、improving、无 `[CHANGES_REQUESTED]`） | `diminishing_issues` | `true` |
-| 6 | 以上均不满足 | `null` | `false`（继续迭代） |
+`maxRounds` 默认值为 20，可通过 `ConvergenceServiceOptions` 配置。
 
-### 继续条件
+### 3.5 Loop Detection
 
-当 `shouldTerminate: false` 时，工作流继续下一轮迭代。这意味着：
-- Reviewer 输出了 `[CHANGES_REQUESTED]` 或无明确标记
-- 尚未达到最大轮次
-- 未检测到循环
-- 阻塞问题仍然存在
+`detectLoop(current, previousOutputs)` 通过关键词相似度检测重复反馈模式：
 
-### 循环检测
+**规则一：近期匹配** — 当前输出与最近 4 轮中任意一轮相似度 >= 阈值 → 判定为循环。
 
-`detectLoop(current, previousOutputs)` 使用基于关键词的 Jaccard 相似度检测重复反馈：
+**规则二：周期性模式** — 历史至少 3 轮时，当前输出与最近 8 轮中 2 轮以上相似 → 判定为循环。
 
-**检查 1：近期匹配** — 当前输出与最近 4 轮中任意一轮的相似度 ≥ 0.35 则判定为循环。
-
-**检查 2：周期性模式** — 当前输出与历史中 2 个以上非连续轮次相似度均 ≥ 0.35 则判定为循环。
+**相似度算法**：基于关键词的 Jaccard similarity，阈值 `SIMILARITY_THRESHOLD = 0.45`。
 
 #### 关键词提取
 
-`extractKeywords(text)` 实现了语言感知的关键词提取：
+`extractKeywords(text)` 实现双语关键词提取：
 
-- **英文** — 提取 ≥ 3 字符的单词，过滤停用词（the, this, that, with, ...）
-- **中文** — 提取 CJK 字符并生成 bigram（二元组），过滤停用字（的、了、在、是、...）；同时保留有意义的单字
+**英文处理**：
+- 小写化 → 按非字母数字拆分 → 过滤长度 < 3 的词。
+- 过滤 stop words：the, this, that, with, from, have, been, was, were, are, for, and, but, not 等。
 
-相似度计算使用 Jaccard 系数：`|A ∩ B| / |A ∪ B|`，阈值 `SIMILARITY_THRESHOLD = 0.35`。
+**中文处理**：
+- 提取 CJK 字符（`\u4e00-\u9fff` 范围）。
+- 生成 bigram（2 字符滑动窗口）用于语义匹配。
+- 同时保留有意义的单字符。
+- 过滤中文 stop words：的、了、在、是、我、有、和、就、不 等。
 
-### 进度追踪
+这种双语提取确保了中英文混合输出的循环检测能力。
 
-`detectProgressTrend(currentIssueCount, previousOutputs)` 返回：
+### 3.6 Progress Trend
 
-| 趋势 | 判定条件 |
-|------|----------|
-| `improving` | 当前问题数 < 上轮问题数，或从 >0 降到 0 |
-| `stagnant` | 当前问题数 = 上轮问题数 且 >0 |
-| `unknown` | 无历史数据或不满足以上条件 |
+`detectProgressTrend(currentIssueCount, previousOutputs)` 对比当前和最近 3 轮的 blocking issue 数量：
 
-### 评估结果接口
+| Trend | 条件 |
+|-------|------|
+| `improving` | 当前 issue 数 < 上轮，或从 >0 降到 0 |
+| `stagnant` | 当前 issue 数 = 上轮且 >0 |
+| `unknown` | 无历史数据或不满足上述条件 |
+
+Trend 信息用于 `diminishing_issues` 终止条件的判断，同时可供 UI 展示迭代进展。
+
+### 3.7 评估结果接口
 
 ```typescript
 interface ConvergenceResult {
   classification: 'approved' | 'soft_approved' | 'changes_requested';
   shouldTerminate: boolean;
-  reason: 'approved' | 'soft_approved' | 'max_rounds' | 'loop_detected' | 'diminishing_issues' | null;
+  reason: 'approved' | 'soft_approved' | 'max_rounds'
+        | 'loop_detected' | 'diminishing_issues' | null;
   loopDetected: boolean;
   issueCount: number;
   progressTrend: 'improving' | 'stagnant' | 'unknown';
@@ -194,64 +198,55 @@ interface ConvergenceResult {
 
 ---
 
-## 与工作流引擎的集成
-
-决策引擎的两个组件在工作流引擎的不同阶段发挥作用：
-
-### ChoiceDetector 集成点
-
-1. **输出拦截** — 工作流引擎获取 LLM 输出后，经 `ChoiceDetector.detect()` 检查
-2. **转发调度** — 检测到选择题后，调用 `buildForwardPrompt()` 生成 Prompt，调度对方 LLM 处理
-3. **结果回注** — 对方 LLM 的选择结果注入回原 LLM 的上下文
-
-`ChoiceDetector` 是**无状态**的，不维护对话历史，可在工作流任意节点复用。
-
-### ConvergenceService 集成点
-
-1. **审查后评估** — 工作流引擎在 `EVALUATING` 状态调用 `evaluate()` 判断是否收敛
-2. **终止决策** — 根据 `shouldTerminate` 决定进入 `DONE` 状态或回到 `CODING` 状态
-3. **进度报告** — `progressTrend` 和 `issueCount` 用于 UI 显示迭代进展
-
-`ConvergenceService` 需要传入 `EvaluateContext`（包含 `currentRound` 和 `previousOutputs`），由工作流引擎负责维护。
-
----
-
-## 路由流程图
+## 4. 协作流程
 
 ```
 LLM 输出文本
     │
-    ├─── ChoiceDetector.detect() ────┐
-    │                                │
-    │   detected: false              │   detected: true
-    │       │                        │       │
-    │       ▼                        │       ▼
-    │   正常流转                     │   buildForwardPrompt()
-    │       │                        │       │
-    │       │                        │       ▼
-    │       │                        │   对方 LLM 回答选择
-    │       │                        │       │
-    │       │                        │       ▼
-    │       │                        │   结果注入原 LLM 上下文
-    │       │                        │       │
-    │       ◄────────────────────────┘───────┘
-    │
-    ▼
-Reviewer 输出（审查完成后）
-    │
-    ▼
-ConvergenceService.evaluate()
-    │
-    ├── shouldTerminate: true
+    ├─── ChoiceDetector.detect()
     │       │
-    │       ├── reason: approved         → 工作流完成 (DONE)
-    │       ├── reason: soft_approved    → 工作流完成 (DONE)
-    │       ├── reason: max_rounds       → 工作流完成 (DONE)，附带警告
-    │       ├── reason: loop_detected    → 工作流完成 (DONE)，附带警告
-    │       └── reason: diminishing_issues → 工作流完成 (DONE)
+    │       ├─ detected: false → 继续正常流程
+    │       │
+    │       └─ detected: true
+    │               │
+    │               ▼
+    │           buildForwardPrompt()
+    │               │
+    │               ▼
+    │           转发给对方 LLM 决策
+    │               │
+    │               ▼
+    │           用决策结果替换原始选择题
+    │               │
+    │               ▼
+    │           回到正常流程
     │
-    └── shouldTerminate: false
+    └─── ConvergenceService.evaluate()（仅 Reviewer 输出）
             │
-            ▼
-        回到 CODING 状态，开始下一轮迭代
+            ├── shouldTerminate: true
+            │       │
+            │       ├── reason: approved          → 工作流完成
+            │       ├── reason: soft_approved     → 工作流完成
+            │       ├── reason: max_rounds        → 工作流完成（附带警告）
+            │       ├── reason: loop_detected     → 工作流完成（附带警告）
+            │       └── reason: diminishing_issues → 工作流完成
+            │
+            └── shouldTerminate: false → 继续下一轮 Coder → Reviewer 循环
 ```
+
+---
+
+## 5. 关键设计决策
+
+| 决策 | 理由 |
+|------|------|
+| 只认 `[APPROVED]` marker | 保守策略，避免 Reviewer 客套话误判为通过 |
+| Soft approval 作为补充 | 兜底处理 Reviewer 忘记标记但明确表达认可的情况 |
+| Jaccard similarity + 双语 bigram | 轻量级相似度计算，无需 embedding 模型，支持中英文混合场景 |
+| 阈值 0.45 | 平衡灵敏度与误报率，低于此值的输出通常包含足够的新信息 |
+| Bullet 列表长度限制 120 | 避免将正常代码描述段落误判为选择题选项 |
+| 代码块过滤 | 防止代码注释中的问号/列表触发误检测 |
+| 默认 maxRounds = 20 | 防止无限迭代，可通过配置覆盖 |
+| Diminishing issues 至少 2 轮 | 避免首轮就因 issue = 0 误终止 |
+| 双层 issue 计数 | 优先使用结构化 `Blocking: N` 输出，heuristic 仅作 fallback |
+| ChoiceDetector 无状态 | 不维护历史，可在任意节点复用，降低耦合 |

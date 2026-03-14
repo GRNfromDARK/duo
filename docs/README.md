@@ -2,175 +2,245 @@
 
 ## 项目简介
 
-Duo 是一个基于终端的 TUI（Text User Interface）应用，用于协调多个 AI 编程助手协同完成编码任务。核心理念是 **Coder-Reviewer 双角色迭代**：一个 AI 负责编写代码（Coder），另一个 AI 负责审查代码（Reviewer），两者自动循环迭代，直到代码通过审查或达到最大轮次。
+Duo 是一个**多 AI 编程助手协作平台**，通过将两个 AI 编程工具分别担任 **Coder**（编码者）和 **Reviewer**（审查者）角色，在自动化的编码-审查迭代循环中完成编程任务。
 
-单个 AI 编程助手容易产生盲点和错误。Duo 引入了"双人审查"模式，通过多轮结构化迭代（code -> review -> evaluate -> loop）显著提升代码质量。
+核心创新在于引入了 **God LLM 智能编排层**：一个独立的 LLM 充当"上帝"角色，自主完成任务分析、路由决策、收敛判断和异常处理，实现 **Coder + Reviewer + God 三方协作**的全自动编程工作流。
 
-Duo 内置了 12 种主流 AI CLI 工具的适配器，用户可以自由组合任意两个作为 Coder 和 Reviewer。
+```
+用户任务 → God 分析 → Coder 编码 → God 路由 → Reviewer 审查 → God 收敛判断 → 完成/继续迭代
+```
 
 ## 核心特性
 
-- **双 Agent 协作** — Coder 编码、Reviewer 审查，自动多轮迭代直到收敛
-- **12 种 AI 工具支持** — Claude Code、Codex、Gemini CLI、GitHub Copilot、Aider、Amazon Q、Cursor、Cline、Continue、Goose、Amp、Qwen
-- **插件化 Adapter 架构** — 统一的 `CLIAdapter` 接口，支持自定义适配器（`.duo/adapters.json`）和禁用内置适配器
-- **xstate v5 状态机** — 11 个状态、20+ 事件类型、7 个 guard，严格的串行执行保证同一时刻只有一个 LLM 进程运行
-- **终端 TUI 界面** — 基于 Ink 6 + React 19，支持实时流式输出、滚动、搜索、快捷键、多种 Overlay 面板
-- **会话持久化与恢复** — snapshot.json + history.jsonl 原子写入，支持 `duo resume` 恢复中断的会话，兼容 legacy 格式
-- **智能收敛检测** — 基于 `[APPROVED]` 标记、soft approval 识别（LGTM/可以合并等）、循环检测（Jaccard 相似度）、问题数趋势分析（improving/stagnant）、diminishing issues 自动终止
-- **上下文管理** — Token 预算控制（80% 窗口），最近 3 轮完整历史 + 历史轮次摘要压缩，结构化 key points 提取
-- **选择题自动路由** — 当 LLM 提出选择题时（A/B/C、方案一/二、Option 1/2），自动路由给对方 LLM 作答
-- **中断处理** — 单击 Ctrl+C 中断当前进程并保留输出，双击（<500ms）保存会话并退出，支持文本中断
-- **环境隔离** — 通过 `env-builder` 为子进程构建最小化环境变量集（BASE_ENV_VARS + requiredVars + requiredPrefixes），避免泄露
-- **进程生命周期管理** — detached 进程组、SIGTERM -> 5s -> SIGKILL 优雅退出、心跳检测（30s/60s）、超时控制（默认 10 分钟）、50MB 输出缓冲区上限
-- **自定义 Prompt 模板** — 支持 `.duo/prompts/` 目录下的 `coder.md` / `reviewer.md` 自定义模板，`{{task}}`、`{{history}}` 等占位符
-- **流式输出解析** — 三种解析器（StreamJsonParser、JsonlParser、TextStreamParser），支持畸形行计数和可观测性
-- **Reviewer 结构化输出** — Progress Checklist、Blocking/Non-blocking 分类、`Blocking: N` 计数、`[APPROVED]`/`[CHANGES_REQUESTED]` verdict
+### 三方协作架构
+- **Coder**：负责编写代码、实现功能
+- **Reviewer**：负责代码审查、发现问题
+- **God LLM**：智能编排器，自主决策任务路由、收敛判断、循环检测
+
+### 多 AI 工具支持
+支持 12 种主流 AI 编程工具作为 Coder/Reviewer：
+Claude Code、Codex、Gemini、Copilot、Cursor、Aider、Amazon Q、Cline、Continue、Goose、Amp、Qwen
+
+### God LLM 智能编排
+- **任务意图解析**：自动分类任务类型（explore/code/discuss/review/debug/compound）
+- **动态轮次调整**：根据任务类型智能设定最大迭代轮次
+- **路由决策**：Coder/Reviewer 输出后自主决定下一步动作
+- **收敛判断**：判断任务是否完成，支持终止标准追踪
+- **循环检测**：识别死循环并介入干预
+- **漂移检测**：监控 God 决策质量，防止过度宽松
+- **降级管理**：God 失败时自动降级到规则引擎
+- **一致性校验**：检测 God 输出中的逻辑矛盾
+
+### 状态机驱动
+基于 XState v5 的 11 状态工作流状态机，支持序列化/反序列化、会话恢复
+
+### 终端 UI
+基于 Ink + React 的现代终端界面，支持实时流式输出、滚动、搜索、Overlay 面板
+
+### 会话持久化
+支持会话保存、恢复（`duo resume`）、God 审计日志查看（`duo log`）
 
 ## 技术栈
 
 | 类别 | 技术 |
 |------|------|
-| 语言 | TypeScript（strict 模式） |
-| 运行时 | Node.js >= 20 |
-| TUI 框架 | Ink 6 + React 19 |
-| 状态管理 | xstate v5 + @xstate/react |
-| 构建工具 | tsup（ESM 格式输出） |
-| 开发工具 | tsx |
-| 测试框架 | vitest 4 |
-| 代码检查 | ESLint 10 |
-| 测试工具 | ink-testing-library |
+| 运行时 | Node.js (ESM) |
+| 语言 | TypeScript 5.9 |
+| 状态管理 | XState v5 |
+| UI 框架 | Ink 6 + React 19 |
+| Schema 校验 | Zod 4 |
+| 构建工具 | tsup |
+| 测试框架 | Vitest 4 |
+| 包管理 | npm |
 
-## 完整项目结构
+## 项目结构
 
 ```
-src/
-├── index.ts                        # 版本号导出（VERSION = '1.0.0'）
-├── cli.ts                          # CLI 入口，解析命令（start/resume/--version），渲染 Ink App
-├── cli-commands.ts                 # CLI 命令处理器（handleStart, handleResume, handleResumeList）
+duo/
+├── package.json                          # 项目配置、依赖、脚本
+├── tsconfig.json                         # TypeScript 配置
+├── docs/                                 # 项目文档
+│   ├── README.md                         # 本文件 — 项目总览
+│   ├── architecture.md                   # 系统架构文档
+│   ├── modules/                          # 模块详细文档
+│   │   ├── cli-entry.md                  # CLI 入口模块
+│   │   ├── type-system.md                # 类型系统
+│   │   ├── adapter-layer.md              # Adapter 适配层
+│   │   ├── parsers.md                    # 输出解析器
+│   │   ├── session-management.md         # 会话管理
+│   │   ├── decision-engine.md            # 决策引擎（旧版规则）
+│   │   ├── workflow-engine.md            # 工作流状态机
+│   │   ├── ui-state.md                   # UI 状态管理
+│   │   └── ui-components.md              # UI 组件
+│   ├── plans/                            # 开发计划
+│   └── requirements/                     # 需求文档
 │
-├── types/
-│   ├── adapter.ts                  # CLIAdapter 接口、ExecOptions、OutputChunk、CLIRegistryEntry、ParserType
-│   ├── session.ts                  # SessionConfig、StartArgs、ValidationResult、StartResult
-│   └── ui.ts                       # RoleName、RoleStyle、ROLE_STYLES、Message、ScrollState、MessageMetadata
-│
-├── adapters/
-│   ├── registry.ts                 # 12 种 CLI 工具注册表（CLI_REGISTRY），含命令、检测方式、parser 类型
-│   ├── detect.ts                   # 并行检测已安装的 CLI 工具（3s 超时）、自定义适配器加载（.duo/adapters.json）
-│   ├── factory.ts                  # Adapter 工厂（createAdapter），按名称实例化
-│   ├── output-stream-manager.ts    # 多消费者输出流广播、中断处理、缓冲区管理
-│   ├── process-manager.ts          # [NEW] 子进程生命周期：detached spawn、SIGTERM/SIGKILL 优雅退出、心跳检测、超时、缓冲区限制
-│   ├── env-builder.ts              # [NEW] 子进程环境隔离：BASE_ENV_VARS + requiredVars + requiredPrefixes + extraEnv
-│   ├── claude-code/adapter.ts      # Claude Code 适配器（stream-json）
-│   ├── codex/adapter.ts            # Codex 适配器（jsonl）
-│   ├── gemini/adapter.ts           # Gemini CLI 适配器（stream-json）
-│   ├── copilot/adapter.ts          # GitHub Copilot 适配器（jsonl）
-│   ├── aider/adapter.ts            # Aider 适配器（text）
-│   ├── amazon-q/adapter.ts         # Amazon Q 适配器（text）
-│   ├── cursor/adapter.ts           # Cursor 适配器（jsonl）
-│   ├── cline/adapter.ts            # Cline 适配器（jsonl）
-│   ├── continue/adapter.ts         # Continue 适配器（jsonl）
-│   ├── goose/adapter.ts            # Goose 适配器（text）
-│   ├── amp/adapter.ts              # Amp 适配器（stream-json）
-│   └── qwen/adapter.ts             # Qwen 适配器（stream-json）
-│
-├── parsers/
-│   ├── index.ts                    # 统一解析器导出（StreamJsonParser, JsonlParser, TextStreamParser）
-│   ├── text-stream-parser.ts       # 纯文本流解析，代码块提取 + 错误模式检测（Aider、Amazon Q、Goose）
-│   ├── stream-json-parser.ts       # [NEW] NDJSON stream-json 解析，畸形行计数（Claude Code、Gemini、Amp、Qwen）
-│   └── jsonl-parser.ts             # [NEW] JSONL 格式解析，畸形行计数（Codex、Cline、Copilot、Cursor、Continue）
-│
-├── session/
-│   ├── session-starter.ts          # 会话创建：parseStartArgs、validateProjectDir、validateCLIChoices、createSessionConfig
-│   ├── session-manager.ts          # [NEW] 会话持久化：SessionManager 类，snapshot.json 原子写入（tmp+rename），
-│   │                               #   history.jsonl 追加写入，legacy 格式兼容（session.json + state.json + history.json），
-│   │                               #   崩溃容错（最后一行截断跳过），类型守卫验证
-│   └── context-manager.ts          # [NEW] Prompt 构建：ContextManager 类，Coder/Reviewer 模板（含中英双语指令），
-│                                   #   历史摘要（最近 3 轮完整 + 旧轮摘要），Token 预算（80% context window），
-│                                   #   自定义模板加载（.duo/prompts/），单次 pass 模板解析防注入，
-│                                   #   结构化 key points 提取，Previous Feedback Checklist 生成
-│
-├── decision/
-│   ├── choice-detector.ts          # 选择题检测（ABC、123、方案一/二、Option、Bullet），代码块过滤，
-│   │                               #   buildForwardPrompt 生成对方 LLM 作答 prompt
-│   └── convergence-service.ts      # [NEW] ConvergenceService 类：
-│                                   #   classify（[APPROVED] > soft approval > changes_requested），
-│                                   #   evaluate（终止条件：approved/soft_approved/max_rounds/loop_detected/diminishing_issues），
-│                                   #   countBlockingIssues（优先 "Blocking: N" 行 > 启发式标记计数），
-│                                   #   detectLoop（Jaccard 关键词相似度 >= 0.35），
-│                                   #   detectProgressTrend（improving/stagnant/unknown），
-│                                   #   CJK bigram + 英文关键词提取
-│
-├── engine/
-│   ├── workflow-machine.ts         # xstate v5 状态机：11 states, 20+ events, 7 guards，
-│   │                               #   WorkflowContext（round/maxRounds/taskPrompt/activeProcess/lastError/lastCoderOutput/lastReviewerOutput/sessionId），
-│   │                               #   支持序列化/反序列化实现会话恢复（RESUMING -> RESTORED_TO_*）
-│   └── interrupt-handler.ts        # 中断处理：单击 Ctrl+C 中断 + 保留输出，双击 Ctrl+C（<500ms）保存会话并退出，
-│                                   #   文本中断（用户边打字边中断），handleUserInput 恢复
-│
-└── ui/
-    ├── 状态文件：
-    │   ├── scroll-state.ts         # 滚动状态管理（offset/viewportHeight/totalLines/autoFollow）
-    │   ├── round-summary.ts        # 轮次摘要生成
-    │   ├── display-mode.ts         # 显示模式切换
-    │   ├── directory-picker-state.ts  # 目录选择器状态
-    │   ├── keybindings.ts          # 快捷键绑定定义
-    │   ├── overlay-state.ts        # Overlay 覆盖层状态管理
-    │   ├── markdown-parser.ts      # Markdown 解析渲染
-    │   ├── git-diff-stats.ts       # Git diff 统计信息
-    │   ├── session-runner-state.ts # Session runner 状态
-    │   └── message-lines.ts        # [NEW] 消息行处理
+└── src/                                  # 源代码 (~17,255 行, ~100 个文件)
+    ├── index.ts                          # 版本导出
+    ├── cli.ts                            # CLI 入口 — 命令解析、Ink 渲染启动
+    ├── cli-commands.ts                   # CLI 命令处理器 (start/resume/log)
     │
-    └── components/
-        ├── App.tsx                 # 应用根组件，连接 xstate 状态机与 UI
-        ├── MainLayout.tsx          # [NEW] 主布局组件
-        ├── StatusBar.tsx           # 状态栏（当前状态、轮次、活跃进程）
-        ├── CodeBlock.tsx           # 代码块语法高亮渲染
-        ├── ScrollIndicator.tsx     # 滚动指示器
-        ├── DirectoryPicker.tsx     # 目录选择器组件
-        ├── HelpOverlay.tsx         # 帮助面板覆盖层
-        ├── ContextOverlay.tsx      # 上下文面板覆盖层
-        ├── TimelineOverlay.tsx     # 时间线面板覆盖层
-        ├── SearchOverlay.tsx       # 搜索面板覆盖层
-        ├── InputArea.tsx           # 用户输入区域
-        ├── SystemMessage.tsx       # 系统消息显示
-        ├── ConvergenceCard.tsx     # 收敛结果卡片
-        ├── DisagreementCard.tsx    # 分歧展示卡片
-        ├── MessageView.tsx         # 消息视图（Coder/Reviewer 输出）
-        └── StreamRenderer.tsx      # 流式输出实时渲染器
+    ├── types/                            # 核心类型定义
+    │   ├── adapter.ts                    # CLIAdapter 接口、OutputChunk、ExecOptions
+    │   ├── session.ts                    # SessionConfig、StartArgs、ValidationResult
+    │   ├── ui.ts                         # RoleName、RoleStyle — 12 种 AI 工具的显示样式
+    │   ├── god-adapter.ts          [NEW] # GodAdapter 接口 — God 专用适配器类型
+    │   └── god-schemas.ts          [NEW] # God 输出 Zod Schema — 5 种决策结构定义
+    │
+    ├── adapters/                         # AI 工具适配层
+    │   ├── registry.ts                   # CLI 工具注册表 — 12 种工具的命令/参数配置
+    │   ├── detect.ts                     # CLI 工具自动检测 — 扫描已安装工具
+    │   ├── factory.ts                    # Adapter 工厂 — 按名称创建 CLIAdapter 实例
+    │   ├── process-manager.ts            # 子进程管理 — 启动/杀死 CLI 进程
+    │   ├── output-stream-manager.ts      # 输出流管理 — 实时收集 CLI 输出
+    │   ├── env-builder.ts                # 环境变量构建器
+    │   ├── claude-code/                  # Claude Code 适配器
+    │   ├── codex/                        # OpenAI Codex 适配器
+    │   ├── gemini/                       # Google Gemini 适配器
+    │   ├── copilot/                      # GitHub Copilot 适配器
+    │   ├── cursor/                       # Cursor 适配器
+    │   ├── aider/                        # Aider 适配器
+    │   ├── amazon-q/                     # Amazon Q 适配器
+    │   ├── cline/                        # Cline 适配器
+    │   ├── continue/                     # Continue 适配器
+    │   ├── goose/                        # Goose 适配器
+    │   ├── amp/                          # Amp 适配器
+    │   └── qwen/                         # Qwen 适配器
+    │
+    ├── parsers/                          # 输出解析器
+    │   ├── index.ts                      # 解析器导出
+    │   ├── stream-json-parser.ts         # 流式 JSON 解析器 (Claude Code 格式)
+    │   ├── jsonl-parser.ts               # JSONL 解析器 (Codex 格式)
+    │   ├── text-stream-parser.ts         # 纯文本流解析器
+    │   └── god-json-extractor.ts   [NEW] # God JSON 提取器 — 从 God 输出中提取 JSON 并校验
+    │
+    ├── session/                          # 会话管理
+    │   ├── session-starter.ts            # 会话启动 — 参数解析、配置创建
+    │   ├── session-manager.ts            # 会话持久化 — 保存/加载/恢复会话快照
+    │   └── context-manager.ts            # 上下文管理 — Coder/Reviewer 的提示词构建（旧版）
+    │
+    ├── decision/                         # 决策引擎（旧版规则，God 降级后的 fallback）
+    │   ├── choice-detector.ts            # 选择检测 — 识别 LLM 输出中的提问/选项
+    │   └── convergence-service.ts        # 收敛服务 — 基于规则的收敛判断
+    │
+    ├── engine/                           # 工作流引擎
+    │   ├── workflow-machine.ts           # XState v5 状态机 — 11 状态、25+ 事件
+    │   └── interrupt-handler.ts          # 中断处理 — Ctrl+C、文本中断、双击退出
+    │
+    ├── god/                        [NEW] # God LLM 智能编排模块 (23 个文件)
+    │   ├── adapters/                     # God 专用适配器实现
+    │   │   ├── claude-code-god-adapter.ts  # Claude Code 作为 God 的适配器
+    │   │   └── codex-god-adapter.ts        # Codex 作为 God 的适配器
+    │   ├── god-adapter-config.ts         # God 适配器配置 — 支持的 God 工具列表
+    │   ├── god-adapter-factory.ts        # God 适配器工厂 — 按名称创建 GodAdapter
+    │   ├── god-call.ts                   # God 调用封装 — 统一的 God LLM 调用接口
+    │   ├── god-system-prompt.ts          # God 系统提示词 — 编排器角色指令
+    │   ├── god-prompt-generator.ts       # 动态提示词生成 — 按轮次/阶段生成 Coder/Reviewer 提示词
+    │   ├── god-context-manager.ts        # God 上下文管理 — 增量提示、token 估算、会话重建
+    │   ├── task-init.ts                  # 任务初始化 — 意图解析、任务分类、动态轮次
+    │   ├── god-router.ts                 # God 路由器 — PostCoder/PostReviewer 输出分析与路由
+    │   ├── god-convergence.ts            # 收敛判断 — Reviewer 权威的收敛评估
+    │   ├── auto-decision.ts              # 自主决策 — GOD_DECIDING 状态下的 accept/continue 决策
+    │   ├── rule-engine.ts                # 规则引擎 — 不可委托场景的同步规则（< 5ms）
+    │   ├── consistency-checker.ts        # 一致性校验 — God 输出的逻辑矛盾检测与自动修正
+    │   ├── loop-detector.ts              # 循环检测 — 死循环识别与干预策略
+    │   ├── drift-detector.ts             # 漂移检测 — God 决策质量监控
+    │   ├── degradation-manager.ts        # 降级管理 — 四级降级策略（L1-L4）
+    │   ├── alert-manager.ts              # 告警管理 — 延迟/停滞/错误三种告警
+    │   ├── phase-transition.ts           # 阶段转换 — compound 任务的多阶段管理
+    │   ├── interrupt-clarifier.ts        # 中断分类 — God 分析用户中断意图
+    │   ├── god-audit.ts                  # 审计日志 — append-only JSONL 审计记录
+    │   ├── god-session-persistence.ts    # God 会话持久化 — 恢复兼容性（当前禁用）
+    │   └── tri-party-session.ts          # 三方会话协调 — Coder/Reviewer/God 的独立恢复
+    │
+    └── ui/                               # 终端 UI 层
+        ├── 状态管理文件
+        │   ├── scroll-state.ts           # 滚动状态
+        │   ├── round-summary.ts          # 轮次摘要
+        │   ├── display-mode.ts           # 显示模式切换
+        │   ├── directory-picker-state.ts # 目录选择器状态
+        │   ├── keybindings.ts            # 快捷键绑定
+        │   ├── overlay-state.ts          # Overlay 面板状态
+        │   ├── markdown-parser.ts        # Markdown 解析（终端渲染）
+        │   ├── git-diff-stats.ts         # Git diff 统计
+        │   ├── session-runner-state.ts   # 会话运行状态（核心状态驱动）
+        │   ├── message-lines.ts          # 消息行计算
+        │   ├── escape-window.ts    [NEW] # Escape 窗口 — God 决策前的用户干预窗口
+        │   ├── god-decision-banner.ts [NEW] # God 决策横幅状态
+        │   ├── god-fallback.ts     [NEW] # God 降级 fallback 状态
+        │   ├── god-message-style.ts [NEW] # God 消息样式
+        │   ├── god-overlay.ts      [NEW] # God Overlay 面板状态
+        │   ├── phase-transition-banner.ts [NEW] # 阶段转换横幅状态
+        │   ├── reclassify-overlay.ts [NEW] # 重分类 Overlay 状态
+        │   ├── resume-summary.ts   [NEW] # 恢复摘要
+        │   └── task-analysis-card.ts [NEW] # 任务分析卡片状态
+        │
+        └── components/                   # React (Ink) 组件
+            ├── App.tsx                   # 根组件 — 状态机集成、会话生命周期
+            ├── MainLayout.tsx            # 主布局 — 消息列表、输入区、状态栏
+            ├── SetupWizard.tsx     [NEW] # 交互式设置向导
+            ├── StatusBar.tsx             # 状态栏 — 轮次/状态/God 信息
+            ├── InputArea.tsx             # 输入区 — 用户输入、中断操作
+            ├── StreamRenderer.tsx        # 流式渲染器 — 实时 LLM 输出
+            ├── MessageView.tsx           # 消息视图 — 单条消息渲染
+            ├── CodeBlock.tsx             # 代码块渲染
+            ├── SystemMessage.tsx         # 系统消息渲染
+            ├── ScrollIndicator.tsx       # 滚动指示器
+            ├── DirectoryPicker.tsx       # 目录选择器
+            ├── ConvergenceCard.tsx        # 收敛卡片
+            ├── DisagreementCard.tsx       # 分歧卡片
+            ├── HelpOverlay.tsx           # 帮助 Overlay
+            ├── ContextOverlay.tsx        # 上下文 Overlay
+            ├── TimelineOverlay.tsx       # 时间线 Overlay
+            ├── SearchOverlay.tsx         # 搜索 Overlay
+            ├── GodDecisionBanner.tsx [NEW] # God 决策横幅组件
+            ├── PhaseTransitionBanner.tsx [NEW] # 阶段转换横幅组件
+            ├── ReclassifyOverlay.tsx [NEW] # 任务重分类 Overlay 组件
+            └── TaskAnalysisCard.tsx [NEW] # 任务分析展示卡片
 ```
 
 ## 模块文档导航
 
-| 文档 | 内容 |
+详细模块文档位于 `docs/modules/` 目录：
+
+| 文档 | 描述 |
 |------|------|
-| [系统架构](./architecture.md) | 分层架构、数据流、状态机详解、设计决策 |
-| [模块文档](./modules/) | 各模块的详细设计文档 |
+| [cli-entry.md](modules/cli-entry.md) | CLI 入口、命令解析 |
+| [type-system.md](modules/type-system.md) | 核心类型系统（含 God 类型） |
+| [adapter-layer.md](modules/adapter-layer.md) | AI 工具适配层 |
+| [parsers.md](modules/parsers.md) | 输出解析器 |
+| [session-management.md](modules/session-management.md) | 会话管理与持久化 |
+| [decision-engine.md](modules/decision-engine.md) | 决策引擎（旧版规则，降级 fallback） |
+| [workflow-engine.md](modules/workflow-engine.md) | XState 工作流状态机 |
+| [ui-state.md](modules/ui-state.md) | UI 状态管理 |
+| [ui-components.md](modules/ui-components.md) | UI 组件 |
+
+系统架构详见 [architecture.md](architecture.md)。
 
 ## 快速开始
 
-### 环境要求
-
-- Node.js >= 20
-- 至少安装两个支持的 AI CLI 工具（如 `claude`、`codex`、`gemini` 等）
-
-### 安装与运行
+### 安装依赖
 
 ```bash
-# 安装依赖
 npm install
+```
 
-# 开发模式运行
+### 开发模式
+
+```bash
 npm run dev
-# 等价于: tsx src/cli.ts
+```
 
-# 构建
+### 构建
+
+```bash
 npm run build
-# 等价于: tsup src/cli.ts --format esm
-# 产物输出到 dist/
+```
 
-# 运行测试
+### 测试
+
+```bash
 npm test
-# 等价于: vitest run
 ```
 
 ## CLI 命令
@@ -178,82 +248,70 @@ npm test
 ### `duo start` — 启动新会话
 
 ```bash
-# 交互模式（引导式设置）
+# 交互式模式（SetupWizard 向导）
 duo start
 
-# 命令行模式（直接启动）
-duo start --coder claude-code --reviewer codex --task "Add JWT auth"
-
-# 指定项目目录
-duo start --dir /path/to/project --coder gemini --reviewer claude-code --task "Fix login bug"
+# 直接指定参数
+duo start --dir ./my-project --coder claude-code --reviewer codex --task "Add JWT auth"
 ```
 
-**参数说明：**
+参数说明：
+- `--dir <path>`：项目目录（默认当前目录）
+- `--coder <cli>`：编码者工具名称
+- `--reviewer <cli>`：审查者工具名称
+- `--task <desc>`：任务描述
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--dir <path>` | 项目目录 | 当前目录（`process.cwd()`） |
-| `--coder <cli>` | Coder 角色使用的 CLI 工具名 | 必填 |
-| `--reviewer <cli>` | Reviewer 角色使用的 CLI 工具名 | 必填 |
-| `--task <desc>` | 任务描述 | 必填 |
-
-如果未提供必填参数，将进入交互模式引导用户完成设置。
+God LLM 会自动选择（默认使用与 Reviewer 相同的 CLI 工具，若不支持则降级）。
 
 ### `duo resume` — 恢复会话
 
 ```bash
-# 列出所有可恢复的会话
+# 列出可恢复的会话
 duo resume
 
-# 恢复指定会话（支持短 ID，取前 8 位）
+# 恢复指定会话
 duo resume <session-id>
 ```
 
-会话数据存储在 `.duo/sessions/<id>/` 目录，包含 `snapshot.json`（元数据+状态）和 `history.jsonl`（对话历史）。
-
-### `duo --version` — 显示版本
+### `duo log` — 查看 God 审计日志
 
 ```bash
-duo --version    # 或 duo -v
+# 查看完整审计日志
+duo log <session-id>
+
+# 按决策类型过滤
+duo log <session-id> --type ROUTING_POST_CODE
+```
+
+审计日志包含：序号、时间戳、轮次、决策类型、输入/输出摘要、延迟统计、类型分布。
+
+### `duo --version` — 查看版本
+
+```bash
+duo --version
 ```
 
 ## 依赖说明
 
-### Runtime 依赖
+### 运行时依赖
 
 | 包 | 版本 | 用途 |
 |----|------|------|
-| `ink` | ^6.8.0 | React for CLI — 终端 TUI 渲染框架 |
-| `react` | ^19.2.4 | UI 组件模型 |
-| `xstate` | ^5.28.0 | 有限状态机引擎，驱动 Coder-Reviewer 工作流 |
-| `@xstate/react` | ^6.1.0 | xstate 的 React hooks 绑定 |
+| `xstate` | ^5.28.0 | 工作流状态机引擎 |
+| `@xstate/react` | ^6.1.0 | XState React 绑定 |
+| `ink` | ^6.8.0 | React 终端 UI 框架 |
+| `react` | ^19.2.4 | UI 组件框架 |
+| `zod` | ^4.3.6 | God 输出 Schema 校验 |
 
-### Dev 依赖
+### 开发依赖
 
 | 包 | 版本 | 用途 |
 |----|------|------|
-| `typescript` | ^5.9.3 | TypeScript 编译器（strict 模式） |
-| `tsup` | ^8.5.1 | TypeScript 打包工具（ESM 格式输出） |
-| `tsx` | ^4.21.0 | TypeScript 即时执行（开发模式） |
-| `vitest` | ^4.0.18 | 单元测试框架 |
+| `typescript` | ^5.9.3 | 类型系统 |
+| `tsup` | ^8.5.1 | 构建打包 |
+| `tsx` | ^4.21.0 | TypeScript 直接执行 |
+| `vitest` | ^4.0.18 | 测试框架 |
 | `eslint` | ^10.0.3 | 代码检查 |
-| `ink-testing-library` | ^4.0.0 | Ink 组件测试工具 |
-| `@types/node` | ^25.4.0 | Node.js 类型定义 |
-| `@types/react` | ^19.2.14 | React 类型定义 |
-
-## 支持的 AI CLI 工具
-
-| 工具 | 命令 | 执行命令 | 输出格式 | Parser 类型 | YOLO 标志 |
-|------|------|----------|----------|-------------|-----------|
-| Claude Code | `claude` | `claude -p` | stream-json | StreamJsonParser | `--dangerously-skip-permissions` |
-| Codex | `codex` | `codex exec` | --json | JsonlParser | `--yolo` |
-| Gemini CLI | `gemini` | `gemini -p` | stream-json | StreamJsonParser | `--yolo` |
-| GitHub Copilot | `copilot` | `copilot -p` | JSON | JsonlParser | `--allow-all-tools` |
-| Aider | `aider` | `aider -m` | text | TextStreamParser | `--yes-always` |
-| Amazon Q | `q` | `q chat --no-interactive` | text | TextStreamParser | `--trust-all-tools` |
-| Cursor | `cursor` | `cursor agent -p` | JSON | JsonlParser | `--auto-approve` |
-| Cline | `cline` | `cline -y` | --json | JsonlParser | `-y` |
-| Continue | `cn` | `cn -p` | --format json | JsonlParser | `--allow` |
-| Goose | `goose` | `goose run -t` | text | TextStreamParser | `GOOSE_MODE=auto` |
-| Amp | `amp` | `amp -x` | stream-json | StreamJsonParser | (无) |
-| Qwen | `qwen` | `qwen -p` | stream-json | StreamJsonParser | `--yolo` |
+| `ink-testing-library` | ^4.0.0 | Ink 组件测试 |
+| `@types/node` | ^25.4.0 | Node.js 类型 |
+| `@types/react` | ^19.2.14 | React 类型 |

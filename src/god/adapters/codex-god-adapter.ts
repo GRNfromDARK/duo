@@ -8,6 +8,11 @@ import { buildAdapterEnv } from '../../adapters/env-builder.js';
 
 function buildCodexGodPrompt(systemPrompt: string, prompt: string): string {
   return [
+    'SYSTEM EXECUTION MODE',
+    'This is a hidden orchestrator sub-call for Duo, not a normal user conversation.',
+    'Do not solve the underlying task directly unless the decision point explicitly asks you to.',
+    'Return only the final decision/output requested by the prompt.',
+    '',
     'SYSTEM ROLE',
     systemPrompt,
     '',
@@ -15,7 +20,6 @@ function buildCodexGodPrompt(systemPrompt: string, prompt: string): string {
     prompt,
     '',
     'You must act only as the God orchestrator for Duo.',
-    'Do not call tools or execute shell commands.',
   ].join('\n');
 }
 
@@ -23,6 +27,8 @@ export class CodexGodAdapter implements GodAdapter {
   readonly name = 'codex';
   readonly displayName = 'Codex';
   readonly version = '0.0.0';
+  readonly toolUsePolicy = 'allow-readonly' as const;
+  readonly minimumTimeoutMs = 90_000;
 
   private processManager: ProcessManager;
   private parser: JsonlParser;

@@ -18,7 +18,8 @@ export type GodMessageType =
   | 'task_analysis'       // 任务分析
   | 'phase_transition'    // 阶段切换
   | 'auto_decision'       // 代理决策
-  | 'anomaly_detection';  // 异常检测
+  | 'anomaly_detection'   // 异常检测
+  | 'clarification';      // Card E.2: God 澄清提问
 
 const BOX_WIDTH = 50;
 
@@ -35,6 +36,7 @@ const TYPE_LABELS: Record<GodMessageType, string> = {
   phase_transition: 'God · Phase Transition',
   auto_decision: 'God · Auto Decision',
   anomaly_detection: 'God · Anomaly Detection',
+  clarification: 'God · Clarification',
 };
 
 /** Critical decision types that warrant visual display. */
@@ -43,6 +45,7 @@ const VISIBLE_TYPES: Set<string> = new Set<string>([
   'phase_transition',
   'auto_decision',
   'anomaly_detection',
+  'clarification',
 ]);
 
 /**

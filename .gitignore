@@ -3,3 +3,12 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# 会话数据
+.duo/sessions/
+.duo/tmp-*/
+
+# 开发过程文件
+Autodev/
+todolist.md
+ccccccccc/

@@ -7,9 +7,9 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Box, useStdout, useApp } from 'ink';
+import { Box, useStdout, useApp, useInput } from 'ink';
 import { useMachine } from '@xstate/react';
-import { workflowMachine } from '../../engine/workflow-machine.js';
+import { workflowMachine, detectRoutingConflicts } from '../../engine/workflow-machine.js';
 import type { WorkflowContext } from '../../engine/workflow-machine.js';
 import { createAdapter } from '../../adapters/factory.js';
 import { createGodAdapter } from '../../god/god-adapter-factory.js';
@@ -34,8 +34,6 @@ import {
   applyOutputChunk,
   buildRestoredSessionRuntime,
   createStreamAggregation,
-  decidePostCodeRoute,
-  decidePostReviewRoute,
   finalizeStreamAggregation,
   resolveUserDecision,
   type ChoiceRoute,
@@ -43,24 +41,35 @@ import {
 import * as path from 'node:path';
 import { initializeTask } from '../../god/task-init.js';
 import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
-import { GodAuditLogger } from '../../god/god-audit.js';
+import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
 import { DegradationManager } from '../../god/degradation-manager.js';
 import type { GodTaskAnalysis, GodAutoDecision } from '../../types/god-schemas.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
-import { routePostCoder, routePostReviewer } from '../../god/god-router.js';
-import { evaluateConvergence, type ConvergenceLogEntry } from '../../god/god-convergence.js';
+import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { generateCoderPrompt, generateReviewerPrompt } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import { makeAutoDecision, makeLocalAutoDecision } from '../../god/auto-decision.js';
-import type { AutoDecisionContext } from '../../god/auto-decision.js';
-import { evaluateRules } from '../../god/rule-engine.js';
 import { GodDecisionBanner } from './GodDecisionBanner.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
 import { PhaseTransitionBanner } from './PhaseTransitionBanner.js';
+import { CompletionScreen } from './CompletionScreen.js';
 import { withGodFallback, withGodFallbackSync } from '../god-fallback.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
-import { evaluatePhaseTransition } from '../../god/phase-transition.js';
 import { classifyInterruptIntent } from '../../god/interrupt-clarifier.js';
+import { buildContinuedTaskPrompt } from '../completion-flow.js';
+import { resolveGlobalCtrlCAction } from '../global-ctrl-c.js';
+import { performSafeShutdown } from '../safe-shutdown.js';
+import { appendPromptLog } from '../../session/prompt-log.js';
+import {
+  processWorkerOutput,
+  createProcessErrorObservation,
+  createTimeoutObservation,
+} from '../../god/observation-integration.js';
+import { ProcessTimeoutError } from '../../adapters/process-manager.js';
+import { classifyOutput, createObservation } from '../../god/observation-classifier.js';
+import { formatGodMessage } from '../god-message-style.js';
+import { dispatchMessages, checkNLInvariantViolations } from '../../god/message-dispatcher.js';
+import { GodDecisionService, type GodDecisionContext } from '../../god/god-decision-service.js';
+import { executeActions, type HandExecutionContext } from '../../god/hand-executor.js';
 
 // ── Adapter session helpers (duck-typed to avoid modifying CLIAdapter interface) ──
 
@@ -89,6 +98,11 @@ export interface AppProps {
   resumeSession?: LoadedSession;
 }
 
+interface GlobalCtrlCHandlers {
+  interrupt: () => void;
+  safeExit: () => Promise<void> | void;
+}
+
 // ── Helper: map xstate state → UI status ──
 
 function mapStateToStatus(stateValue: string): WorkflowStatus {
@@ -98,13 +112,15 @@ function mapStateToStatus(stateValue: string): WorkflowStatus {
       return 'active';
     case 'GOD_DECIDING':
     case 'TASK_INIT':
-    case 'ROUTING_POST_CODE':
-    case 'ROUTING_POST_REVIEW':
-    case 'EVALUATING':
+    case 'OBSERVING':
+    case 'EXECUTING':
       return 'routing';
     case 'MANUAL_FALLBACK':
       return 'interrupted';
     case 'INTERRUPTED':
+      return 'interrupted';
+    // Card E.2: CLARIFYING mapped to 'interrupted' visual status
+    case 'CLARIFYING':
       return 'interrupted';
     case 'ERROR':
       return 'error';
@@ -131,6 +147,7 @@ function getActiveAgentLabel(
 // ── Root App Component ──
 
 export function App({ initialConfig, detected, resumeSession }: AppProps): React.ReactElement {
+  const { exit } = useApp();
   const hasFullConfig =
     initialConfig &&
     initialConfig.projectDir &&
@@ -150,10 +167,46 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
         }
       : null,
   );
+  const [sessionRunKey, setSessionRunKey] = useState(0);
+  const [activeResumeSession, setActiveResumeSession] = useState<LoadedSession | undefined>(
+    resumeSession,
+  );
+  const globalCtrlCHandlersRef = useRef<GlobalCtrlCHandlers>({
+    interrupt: () => {},
+    safeExit: () => exit(),
+  });
+  const lastCtrlCRef = useRef(0);
+  const safeExitInFlightRef = useRef(false);
 
   const { stdout } = useStdout();
   const columns = stdout.columns || 80;
   const rows = stdout.rows || 24;
+
+  const registerGlobalCtrlCHandlers = useCallback((handlers: GlobalCtrlCHandlers | null) => {
+    globalCtrlCHandlersRef.current = handlers ?? {
+      interrupt: () => {},
+      safeExit: () => exit(),
+    };
+  }, [exit]);
+
+  useInput((input, key) => {
+    if (!(key.ctrl && input === 'c')) return;
+
+    const result = resolveGlobalCtrlCAction(Date.now(), lastCtrlCRef.current);
+    lastCtrlCRef.current = result.nextLastCtrlCAt;
+
+    if (result.action === 'safe_exit') {
+      if (safeExitInFlightRef.current) return;
+      safeExitInFlightRef.current = true;
+      void Promise.resolve(globalCtrlCHandlersRef.current.safeExit())
+        .finally(() => {
+          safeExitInFlightRef.current = false;
+        });
+      return;
+    }
+
+    globalCtrlCHandlersRef.current.interrupt();
+  });
 
   // ── Setup Phase: use SetupWizard ──
 
@@ -171,11 +224,31 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
 
   return (
     <SessionRunner
+      key={`${sessionRunKey}`}
       config={sessionConfig}
       detected={detected}
       columns={columns}
       rows={rows}
-      resumeSession={resumeSession}
+      resumeSession={activeResumeSession}
+      registerGlobalCtrlCHandlers={registerGlobalCtrlCHandlers}
+      onContinueCurrentTask={(followUp) => {
+        setActiveResumeSession(undefined);
+        setSessionConfig((prev) =>
+          prev
+            ? { ...prev, task: buildContinuedTaskPrompt(prev.task, followUp) }
+            : prev,
+        );
+        setSessionRunKey((prev) => prev + 1);
+      }}
+      onCreateNewTask={(task) => {
+        setActiveResumeSession(undefined);
+        setSessionConfig((prev) =>
+          prev
+            ? { ...prev, task: task.trim() }
+            : prev,
+        );
+        setSessionRunKey((prev) => prev + 1);
+      }}
     />
   );
 }
@@ -188,6 +261,9 @@ interface SessionRunnerProps {
   columns: number;
   rows: number;
   resumeSession?: LoadedSession;
+  registerGlobalCtrlCHandlers: (handlers: GlobalCtrlCHandlers | null) => void;
+  onContinueCurrentTask: (followUp: string) => void;
+  onCreateNewTask: (task: string) => void;
 }
 
 function SessionRunner({
@@ -196,6 +272,9 @@ function SessionRunner({
   columns,
   rows,
   resumeSession,
+  registerGlobalCtrlCHandlers,
+  onContinueCurrentTask,
+  onCreateNewTask,
 }: SessionRunnerProps): React.ReactElement {
   const { exit } = useApp();
   const MAX_ROUNDS = 20;
@@ -249,6 +328,7 @@ function SessionRunner({
   );
   const reviewerOutputsRef = useRef<string[]>(restoredRuntime?.reviewerOutputs ?? []);
   const pendingInstructionRef = useRef<string | null>(null);
+  const pendingReviewerInstructionRef = useRef<string | null>(null);
   const lastInterruptedRoleRef = useRef<'coder' | 'reviewer' | null>(
     resumeSession?.state.status === 'interrupted'
       ? (resumeSession.state.currentRole as 'coder' | 'reviewer' | null)
@@ -259,6 +339,12 @@ function SessionRunner({
   const lastUnresolvedIssuesRef = useRef<string[]>([]);
   const initializedRef = useRef(false);
   const auditSeqRef = useRef(0);
+  // Card D.1: track which worker role just completed (for OBSERVING classification)
+  const lastWorkerRoleRef = useRef<'coder' | 'reviewer'>('coder');
+  // Card D.1: unified God decision service instance
+  const godDecisionServiceRef = useRef(
+    new GodDecisionService(godAdapterRef.current, degradationManagerRef.current),
+  );
 
   // ── God task analysis state ──
   const [taskAnalysis, setTaskAnalysis] = useState<GodTaskAnalysis | null>(restoredRuntime?.godTaskAnalysis ?? null);
@@ -292,13 +378,14 @@ function SessionRunner({
   const [tokenCount, setTokenCount] = useState(() => restoredRuntime?.tokenCount ?? 0);
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
-  // ── Double Ctrl+C tracking ──
-  const lastCtrlCRef = useRef(0);
-
   // ── Unique message ID generator (session-scoped prefix + monotonic counter) ──
   const msgIdPrefix = useRef(`msg-${Date.now().toString(36)}`);
   const msgIdCounter = useRef(0);
   const nextMsgId = () => `${msgIdPrefix.current}-${++msgIdCounter.current}`;
+  const getSessionDir = useCallback(
+    () => path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current ?? 'unknown'),
+    [config.projectDir],
+  );
 
   // ── Helper: add a message ──
   const addMessage = useCallback(
@@ -368,7 +455,7 @@ function SessionRunner({
 
       // Initialize God audit logger on resume so seq continues from last entry
       if (!godAuditLoggerRef.current && sessionIdRef.current) {
-        const sessionDir = path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current);
+        const sessionDir = getSessionDir();
         godAuditLoggerRef.current = new GodAuditLogger(sessionDir);
         auditSeqRef.current = godAuditLoggerRef.current.getSequence();
       }
@@ -409,7 +496,7 @@ function SessionRunner({
 
     // Initialize God audit logger if not yet created
     if (!godAuditLoggerRef.current && sessionIdRef.current) {
-      const sessionDir = path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current);
+      const sessionDir = getSessionDir();
       godAuditLoggerRef.current = new GodAuditLogger(sessionDir);
     }
 
@@ -449,6 +536,7 @@ function SessionRunner({
             config.task,
             systemPrompt,
             config.projectDir,
+            sessionIdRef.current ? getSessionDir() : undefined,
           );
 
           // Treat null result as schema_validation failure to trigger retry
@@ -530,6 +618,13 @@ function SessionRunner({
         godConvergenceLog: convergenceLogRef.current,
         degradationState: degradationManagerRef.current.serializeState(),
         currentPhaseId,
+        // Card E.2: persist clarification context for duo resume
+        ...(stateValue === 'CLARIFYING' ? {
+          clarification: {
+            frozenActiveProcess: ctx.frozenActiveProcess,
+            clarificationRound: ctx.clarificationRound,
+          },
+        } : {}),
       });
     } catch {
       // Best-effort persistence
@@ -568,8 +663,10 @@ function SessionRunner({
 
         // B.4 + C.2: God dynamic prompt generation with withGodFallbackSync (FR-003, AR-004, AC-2)
         let prompt: string;
+        let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
         if (choiceRouteRef.current?.target === 'coder') {
           prompt = choiceRouteRef.current.prompt;
+          promptSource = 'choice_route';
         } else {
           const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
             degradationManagerRef.current,
@@ -611,6 +708,26 @@ function SessionRunner({
             addMessage({ role: 'system', content: promptNotification.message, timestamp: Date.now() });
           }
           prompt = generatedPrompt;
+          promptSource = promptNotification ? 'context_fallback' : 'god_dynamic';
+        }
+
+        if (sessionIdRef.current) {
+          try {
+            appendPromptLog(getSessionDir(), {
+              round: ctx.round,
+              agent: 'coder',
+              adapter: config.coder,
+              kind: 'coder_round',
+              prompt,
+              systemPrompt: null,
+              meta: {
+                promptSource,
+                phaseId: currentPhaseId,
+                roleHint: config.coder === 'codex' ? 'coder' : undefined,
+                hasInterruptInstruction: Boolean(interruptInstruction),
+              },
+            });
+          } catch { /* best-effort */ }
         }
 
         const execOpts = {
@@ -682,19 +799,43 @@ function SessionRunner({
               } catch { /* best-effort */ }
             }
 
-            addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
-            send({ type: 'CODE_COMPLETE', output: outcome.fullText });
+            // Card B.2: classify output through observation pipeline
+            // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger CODE_COMPLETE
+            const { isWork, observation } = processWorkerOutput(
+              outcome.fullText,
+              'coder',
+              { round: ctx.round, adapter: config.coder },
+            );
+
+            if (isWork) {
+              lastWorkerRoleRef.current = 'coder';
+              addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
+              send({ type: 'CODE_COMPLETE', output: outcome.fullText });
+            } else {
+              // Card D.1: Non-work output → route as incident through OBSERVING pipeline
+              addTimelineEvent('error', `Coder non-work output: ${observation.type}`);
+              addMessage({
+                role: 'system',
+                content: `Coder output classified as ${observation.type}: ${observation.summary}`,
+                timestamp: Date.now(),
+              });
+              send({ type: 'INCIDENT_DETECTED', observation });
+            }
           }
         }
       } catch (err) {
         if (!cancelled) {
           const errorMsg = err instanceof Error ? err.message : String(err);
+          // BUG-9 fix: capture observation return value and route via INCIDENT_DETECTED
+          const observation = err instanceof ProcessTimeoutError
+            ? createTimeoutObservation(ctx.round, { adapter: config.coder })
+            : createProcessErrorObservation(errorMsg, ctx.round, { adapter: config.coder });
           addMessage({
             role: 'system',
             content: `Coder error: ${errorMsg}`,
             timestamp: Date.now(),
           });
-          send({ type: 'PROCESS_ERROR', error: errorMsg });
+          send({ type: 'INCIDENT_DETECTED', observation });
         }
       }
     })();
@@ -705,103 +846,61 @@ function SessionRunner({
     };
   }, [stateValue === 'CODING' ? `CODING-${ctx.round}` : stateValue, config.task]);
 
-  // ── ROUTING_POST_CODE: God routing → fallback to v1 ChoiceDetector ──
-  // C.2: Uses withGodFallback for unified retry + degradation (AC-2, AC-3)
+  // ── OBSERVING: classify output, collect observations, send OBSERVATIONS_READY ──
+  // Card D.1: replaces ROUTING_POST_CODE + ROUTING_POST_REVIEW + EVALUATING
   useEffect(() => {
-    if (stateValue !== 'ROUTING_POST_CODE') return;
+    if (stateValue !== 'OBSERVING') return;
 
-    let cancelled = false;
-    const output = ctx.lastCoderOutput ?? '';
+    // If observations already populated (from INCIDENT_DETECTED), forward them
+    if (ctx.currentObservations.length > 0) {
+      addTimelineEvent('coding', `Observation forwarded: ${ctx.currentObservations.map(o => o.type).join(', ')}`);
+      send({ type: 'OBSERVATIONS_READY', observations: ctx.currentObservations });
+      return;
+    }
 
-    const sessionDir = sessionIdRef.current
-      ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
-      : config.projectDir;
+    // Determine which output to classify based on last completed worker role
+    const source = lastWorkerRoleRef.current;
+    const output = source === 'reviewer' ? ctx.lastReviewerOutput : ctx.lastCoderOutput;
 
-    // v1 fallback helper — shared between immediate-fallback and retry-fallback paths
-    const runV1PostCodeRoute = () => {
-      const decision = decidePostCodeRoute(
-        output,
-        config.task,
-        choiceDetectorRef.current,
-        choiceRouteRef.current,
+    if (!output) {
+      send({ type: 'PROCESS_ERROR', error: 'No output available for observation' });
+      return;
+    }
+
+    // Classify output into a typed Observation (pure sync, < 5ms)
+    const observation = classifyOutput(
+      output,
+      source === 'reviewer' ? 'reviewer' : 'coder',
+      {
+        round: ctx.round,
+        phaseId: currentPhaseId ?? undefined,
+        adapter: source === 'reviewer' ? config.reviewer : config.coder,
+      },
+    );
+
+    // Record round summary after reviewer output (preserves old EVALUATING behavior)
+    if (source === 'reviewer') {
+      roundsRef.current.push({
+        index: ctx.round + 1,
+        coderOutput: ctx.lastCoderOutput ?? '',
+        reviewerOutput: output,
+        summary: contextManagerRef.current.generateSummary(output),
+        timestamp: Date.now(),
+      });
+
+      const summaryMsg = createRoundSummaryMessage(
+        ctx.round + 1,
+        ctx.round + 2,
+        contextManagerRef.current.generateSummary(output).slice(0, 100),
       );
+      setMessages((prev) => [...prev, summaryMsg]);
 
-      if (decision.clearChoiceRoute) {
-        choiceRouteRef.current = null;
-      }
-      if (decision.choiceRoute) {
-        choiceRouteRef.current = decision.choiceRoute;
-        addMessage({
-          role: 'system',
-          content: `Choice detected in Coder output. Forwarding to ${getDisplayName(config.reviewer)}.`,
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-        addTimelineEvent('coding', `Choice detected, forwarding to ${config.reviewer}`);
-      }
+      // Track reviewer outputs for loop detection
+      // (already pushed in REVIEWING hook, but convergence log needs update)
+    }
 
-      return decision;
-    };
-
-    (async () => {
-      try {
-        const godCallStart = Date.now();
-        const { result, usedGod, notification } = await withGodFallback(
-          degradationManagerRef.current,
-          async () => routePostCoder(
-            godAdapterRef.current,
-            output,
-            {
-              round: ctx.round,
-              maxRounds: ctx.maxRounds,
-              taskGoal: config.task,
-              sessionDir,
-              seq: ctx.round + 1,
-              projectDir: config.projectDir,
-            },
-          ),
-          () => ({ v1Decision: runV1PostCodeRoute() }),
-          'process_exit',
-        );
-
-        if (cancelled) return;
-
-        if (notification) {
-          addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
-        }
-
-        if (usedGod) {
-          // God routing succeeded
-          setGodLatency(Date.now() - godCallStart);
-          const godResult = result as Awaited<ReturnType<typeof routePostCoder>>;
-          addTimelineEvent('coding', `God routing: ${godResult.decision.action}`);
-          send(godResult.event);
-        } else {
-          // v1 fallback was used (either God disabled or God failed with retry)
-          const v1Result = result as { v1Decision: ReturnType<typeof decidePostCodeRoute> };
-
-          if (!usedGod && godAuditLoggerRef.current) {
-            godAuditLoggerRef.current.append({
-              timestamp: new Date().toISOString(),
-              round: ctx.round,
-              decisionType: 'ROUTING_POST_CODE_FAILURE',
-              inputSummary: output.slice(0, 500),
-              outputSummary: `Degraded to v1: level=${degradationManagerRef.current.getState().level}`,
-              decision: { degradationLevel: degradationManagerRef.current.getState().level },
-            });
-            addTimelineEvent('error', 'God routing failed, using v1 fallback');
-          }
-
-          send({ type: v1Result.v1Decision.event });
-        }
-      } catch (err) {
-        send({ type: 'PROCESS_ERROR', error: `Routing error: ${err instanceof Error ? err.message : String(err)}` });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    addTimelineEvent('coding', `Observation: ${observation.type} from ${source}`);
+    send({ type: 'OBSERVATIONS_READY', observations: [observation] });
   }, [stateValue]);
 
   // ── REVIEWING state: run reviewer adapter ──
@@ -830,7 +929,9 @@ function SessionRunner({
 
     (async () => {
       try {
-        const interruptInstruction = pendingInstructionRef.current ?? undefined;
+        // BUG-11 fix: prefer God's reviewer instruction over generic pending instruction
+        const interruptInstruction = pendingReviewerInstructionRef.current ?? pendingInstructionRef.current ?? undefined;
+        pendingReviewerInstructionRef.current = null;
         pendingInstructionRef.current = null;
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
         // Get the last reviewer output for feedback checklist (round 2+)
@@ -840,8 +941,10 @@ function SessionRunner({
 
         // B.4 + C.2: God dynamic prompt generation with withGodFallbackSync (FR-003, AR-004, AC-2)
         let prompt: string;
+        let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
         if (choiceRouteRef.current?.target === 'reviewer') {
           prompt = choiceRouteRef.current.prompt;
+          promptSource = 'choice_route';
         } else {
           const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
             degradationManagerRef.current,
@@ -876,6 +979,26 @@ function SessionRunner({
             addMessage({ role: 'system', content: promptNotification.message, timestamp: Date.now() });
           }
           prompt = generatedPrompt;
+          promptSource = promptNotification ? 'context_fallback' : 'god_dynamic';
+        }
+
+        if (sessionIdRef.current) {
+          try {
+            appendPromptLog(getSessionDir(), {
+              round: ctx.round,
+              agent: 'reviewer',
+              adapter: config.reviewer,
+              kind: 'reviewer_round',
+              prompt,
+              systemPrompt: null,
+              meta: {
+                promptSource,
+                phaseId: currentPhaseId,
+                roleHint: config.reviewer === 'codex' ? 'reviewer' : undefined,
+                hasInterruptInstruction: Boolean(interruptInstruction),
+              },
+            });
+          } catch { /* best-effort */ }
         }
 
         const execOpts = {
@@ -948,19 +1071,43 @@ function SessionRunner({
             // Track reviewer outputs for loop detection
             reviewerOutputsRef.current.push(outcome.fullText);
 
-            addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
-            send({ type: 'REVIEW_COMPLETE', output: outcome.fullText });
+            // Card B.2: classify output through observation pipeline
+            // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger REVIEW_COMPLETE
+            const { isWork, observation } = processWorkerOutput(
+              outcome.fullText,
+              'reviewer',
+              { round: ctx.round, adapter: config.reviewer },
+            );
+
+            if (isWork) {
+              lastWorkerRoleRef.current = 'reviewer';
+              addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
+              send({ type: 'REVIEW_COMPLETE', output: outcome.fullText });
+            } else {
+              // Card D.1: Non-work output → route as incident through OBSERVING pipeline
+              addTimelineEvent('error', `Reviewer non-work output: ${observation.type}`);
+              addMessage({
+                role: 'system',
+                content: `Reviewer output classified as ${observation.type}: ${observation.summary}`,
+                timestamp: Date.now(),
+              });
+              send({ type: 'INCIDENT_DETECTED', observation });
+            }
           }
         }
       } catch (err) {
         if (!cancelled) {
           const errorMsg = err instanceof Error ? err.message : String(err);
+          // BUG-9 fix: capture observation return value and route via INCIDENT_DETECTED
+          const observation = err instanceof ProcessTimeoutError
+            ? createTimeoutObservation(ctx.round, { adapter: config.reviewer })
+            : createProcessErrorObservation(errorMsg, ctx.round, { adapter: config.reviewer });
           addMessage({
             role: 'system',
             content: `Reviewer error: ${errorMsg}`,
             timestamp: Date.now(),
           });
-          send({ type: 'PROCESS_ERROR', error: errorMsg });
+          send({ type: 'INCIDENT_DETECTED', observation });
         }
       }
     })();
@@ -971,354 +1118,16 @@ function SessionRunner({
     };
   }, [stateValue === 'REVIEWING' ? `REVIEWING-${ctx.round}` : stateValue, config.task]);
 
-  // ── ROUTING_POST_REVIEW: God routing → fallback to v1 ChoiceDetector ──
-  // C.2: Uses withGodFallback for unified retry + degradation (AC-2, AC-3)
-  useEffect(() => {
-    if (stateValue !== 'ROUTING_POST_REVIEW') return;
-
-    let cancelled = false;
-    const output = ctx.lastReviewerOutput ?? '';
-
-    const sessionDir = sessionIdRef.current
-      ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
-      : config.projectDir;
-
-    // v1 fallback helper — shared between immediate-fallback and retry-fallback paths
-    const runV1PostReviewRoute = () => {
-      const decision = decidePostReviewRoute(
-        output,
-        config.task,
-        choiceDetectorRef.current,
-        choiceRouteRef.current,
-      );
-
-      if (decision.clearChoiceRoute) {
-        choiceRouteRef.current = null;
-      }
-      if (decision.choiceRoute) {
-        choiceRouteRef.current = decision.choiceRoute;
-        addMessage({
-          role: 'system',
-          content: `Choice detected in Reviewer output. Forwarding to ${getDisplayName(config.coder)}.`,
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-        addTimelineEvent('reviewing', `Choice detected, forwarding to ${config.coder}`);
-      }
-
-      return decision;
-    };
-
-    (async () => {
-      try {
-        const godCallStart = Date.now();
-        const { result, usedGod, notification } = await withGodFallback(
-          degradationManagerRef.current,
-          async () => routePostReviewer(
-            godAdapterRef.current,
-            output,
-            {
-              round: ctx.round,
-              maxRounds: ctx.maxRounds,
-              taskGoal: config.task,
-              sessionDir,
-              seq: ctx.round + 1,
-              convergenceLog: convergenceLogRef.current,
-              unresolvedIssues: lastUnresolvedIssuesRef.current,
-              projectDir: config.projectDir,
-            },
-          ),
-          () => ({ v1Decision: runV1PostReviewRoute() }),
-          'process_exit',
-        );
-
-        if (cancelled) return;
-
-        if (notification) {
-          addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
-        }
-
-        if (usedGod) {
-          setGodLatency(Date.now() - godCallStart);
-          const godResult = result as Awaited<ReturnType<typeof routePostReviewer>>;
-
-          // Store unresolvedIssues for next round's Coder prompt (AC-018b)
-          if (godResult.decision.action === 'route_to_coder') {
-            lastUnresolvedIssuesRef.current = godResult.decision.unresolvedIssues ?? [];
-          } else {
-            lastUnresolvedIssuesRef.current = [];
-          }
-
-          // Handle special routing actions with user-visible messages
-          if (godResult.decision.action === 'phase_transition') {
-            // Card C.3 (AC-033, AC-034): Use evaluatePhaseTransition for compound tasks
-            const phases = taskAnalysis?.phases ?? [];
-            const currentPhase = phases.find(p => p.id === (currentPhaseId ?? phases[0]?.id));
-            let phaseSummary = godResult.decision.reasoning;
-
-            if (currentPhase && phases.length > 0) {
-              const transitionResult = evaluatePhaseTransition(
-                currentPhase,
-                phases,
-                convergenceLogRef.current,
-                godResult.decision,
-              );
-              if (transitionResult.shouldTransition && transitionResult.previousPhaseSummary) {
-                phaseSummary = transitionResult.previousPhaseSummary;
-              }
-            }
-
-            const nextPhaseId = godResult.decision.nextPhaseId ?? 'next';
-            addMessage({
-              role: 'system',
-              content: `Phase transition: ${godResult.decision.reasoning}`,
-              timestamp: Date.now(),
-              metadata: { isRoutingEvent: true },
-            });
-            addTimelineEvent('reviewing', `God: phase_transition → ${nextPhaseId}`);
-
-            // Set up 2s escape window banner (AC-033)
-            setPendingPhaseTransition({ nextPhaseId, previousPhaseSummary: phaseSummary });
-            setShowPhaseTransition(true);
-          } else if (godResult.decision.action === 'loop_detected') {
-            addMessage({
-              role: 'system',
-              content: `Loop detected: ${godResult.decision.reasoning}. Requesting user intervention.`,
-              timestamp: Date.now(),
-              metadata: { isRoutingEvent: true },
-            });
-            addTimelineEvent('error', `God: loop_detected — ${godResult.decision.reasoning}`);
-          } else if (godResult.decision.action === 'converged') {
-            addMessage({
-              role: 'system',
-              content: `God convergence: ${godResult.decision.reasoning}`,
-              timestamp: Date.now(),
-              metadata: { isRoutingEvent: true },
-            });
-            addTimelineEvent('converged', `God: converged`);
-          } else {
-            addTimelineEvent('reviewing', `God routing: ${godResult.decision.action}`);
-          }
-
-          send(godResult.event);
-        } else {
-          const v1Result = result as { v1Decision: ReturnType<typeof decidePostReviewRoute> };
-
-          if (godAuditLoggerRef.current) {
-            godAuditLoggerRef.current.append({
-              timestamp: new Date().toISOString(),
-              round: ctx.round,
-              decisionType: 'ROUTING_POST_REVIEW_FAILURE',
-              inputSummary: output.slice(0, 500),
-              outputSummary: `Degraded to v1: level=${degradationManagerRef.current.getState().level}`,
-              decision: { degradationLevel: degradationManagerRef.current.getState().level },
-            });
-            addTimelineEvent('error', 'God routing failed, using v1 fallback');
-          }
-
-          send({ type: v1Result.v1Decision.event });
-        }
-      } catch (err) {
-        send({ type: 'PROCESS_ERROR', error: `Routing error: ${err instanceof Error ? err.message : String(err)}` });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [stateValue]);
-
-  // ── EVALUATING: convergence check ──
-  // ── EVALUATING: convergence check ──
-  // C.2: Uses withGodFallback for unified retry + degradation (AC-2, AC-3)
-  useEffect(() => {
-    if (stateValue !== 'EVALUATING') return;
-
-    let cancelled = false;
-    const reviewerOutput = ctx.lastReviewerOutput ?? '';
-
-    // Helper: record round + summary message (shared by both God and v1 paths)
-    const recordRound = () => {
-      roundsRef.current.push({
-        index: ctx.round + 1,
-        coderOutput: ctx.lastCoderOutput ?? '',
-        reviewerOutput,
-        summary: contextManagerRef.current.generateSummary(reviewerOutput),
-        timestamp: Date.now(),
-      });
-
-      const summaryMsg = createRoundSummaryMessage(
-        ctx.round + 1,
-        ctx.round + 2,
-        contextManagerRef.current.generateSummary(reviewerOutput).slice(0, 100),
-      );
-      setMessages((prev) => [...prev, summaryMsg]);
-    };
-
-    // v1 convergence evaluation — returns {shouldTerminate, event}
-    const runV1Convergence = () => {
-      const result = convergenceRef.current.evaluate(reviewerOutput, {
-        currentRound: ctx.round + 1,
-        previousOutputs: reviewerOutputsRef.current.slice(0, -1),
-      });
-
-      if (result.loopDetected) {
-        addMessage({
-          role: 'system',
-          content: 'Loop detected: Reviewer is providing similar feedback as previous round.',
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-      }
-
-      if (result.classification === 'soft_approved') {
-        addMessage({
-          role: 'system',
-          content: 'Soft approval detected: Reviewer language suggests approval but [APPROVED] marker was not used. Treating as converged.',
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-      }
-
-      if (result.reason === 'diminishing_issues') {
-        addMessage({
-          role: 'system',
-          content: 'Convergence by progress: All blocking issues have been resolved across rounds.',
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-      }
-
-      if (result.progressTrend === 'improving' && result.issueCount > 0) {
-        addMessage({
-          role: 'system',
-          content: `Progress: Issue count decreasing (${result.issueCount} blocking issues remaining). Continuing.`,
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-      } else if (result.progressTrend === 'stagnant' && !result.loopDetected) {
-        addMessage({
-          role: 'system',
-          content: `Stagnant: Issue count unchanged (${result.issueCount} blocking issues). Coder may need different approach.`,
-          timestamp: Date.now(),
-          metadata: { isRoutingEvent: true },
-        });
-      }
-
-      addTimelineEvent(
-        result.shouldTerminate ? 'converged' : 'reviewing',
-        `Evaluation: ${result.classification}, round ${ctx.round + 1}/${MAX_ROUNDS}, ${result.issueCount} issues, trend: ${result.progressTrend}`,
-      );
-
-      return { shouldTerminate: result.shouldTerminate };
-    };
-
-    const sessionDir = sessionIdRef.current
-      ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
-      : config.projectDir;
-
-    (async () => {
-      try {
-        const godCallStart = Date.now();
-        const { result, usedGod, notification } = await withGodFallback(
-          degradationManagerRef.current,
-          async () => evaluateConvergence(
-            godAdapterRef.current,
-            reviewerOutput,
-            {
-              round: ctx.round,
-              maxRounds: ctx.maxRounds,
-              taskGoal: config.task,
-              terminationCriteria: taskAnalysis?.terminationCriteria ?? [],
-              convergenceLog: convergenceLogRef.current,
-              sessionDir,
-              seq: ctx.round + 1,
-              projectDir: config.projectDir,
-            },
-          ),
-          () => ({ v1: runV1Convergence() }),
-          'process_exit',
-        );
-
-        if (cancelled) return;
-
-        if (notification) {
-          addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
-        }
-
-        // Record round (shared by both paths)
-        recordRound();
-
-        if (usedGod) {
-          setGodLatency(Date.now() - godCallStart);
-          const godResult = result as Awaited<ReturnType<typeof evaluateConvergence>>;
-          const { judgment } = godResult;
-          const satisfiedCount = judgment.criteriaProgress.filter(c => c.satisfied).length;
-          const totalCriteria = judgment.criteriaProgress.length;
-
-          addMessage({
-            role: 'system',
-            content: `God convergence: ${judgment.classification}, blocking=${judgment.blockingIssueCount}, criteria=${satisfiedCount}/${totalCriteria}${godResult.terminationReason ? `, reason=${godResult.terminationReason}` : ''}`,
-            timestamp: Date.now(),
-            metadata: { isRoutingEvent: true },
-          });
-
-          addTimelineEvent(
-            godResult.shouldTerminate ? 'converged' : 'reviewing',
-            `God evaluation: ${judgment.classification}, round ${ctx.round + 1}/${ctx.maxRounds}, blocking=${judgment.blockingIssueCount}`,
-          );
-
-          if (godResult.shouldTerminate) {
-            send({ type: 'CONVERGED' });
-          } else {
-            send({ type: 'NOT_CONVERGED' });
-          }
-        } else {
-          // v1 path — runV1Convergence already added messages and timeline events
-          const v1Result = result as { v1: { shouldTerminate: boolean } };
-
-          if (godAuditLoggerRef.current) {
-            godAuditLoggerRef.current.append({
-              timestamp: new Date().toISOString(),
-              round: ctx.round,
-              decisionType: 'CONVERGENCE_FAILURE',
-              inputSummary: reviewerOutput.slice(0, 500),
-              outputSummary: `Degraded to v1: level=${degradationManagerRef.current.getState().level}`,
-              decision: { degradationLevel: degradationManagerRef.current.getState().level },
-            });
-            addTimelineEvent('error', 'God convergence failed, using v1 fallback');
-          }
-
-          if (v1Result.v1.shouldTerminate) {
-            send({ type: 'CONVERGED' });
-          } else {
-            send({ type: 'NOT_CONVERGED' });
-          }
-        }
-      } catch (err) {
-        send({ type: 'PROCESS_ERROR', error: `Evaluation error: ${err instanceof Error ? err.message : String(err)}` });
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [stateValue]);
-
   // ── DONE state ──
   useEffect(() => {
     if (stateValue !== 'DONE') return;
 
     addMessage({
       role: 'system',
-      content: 'Session completed. Thank you for using Duo!',
+      content: 'Session completed. Choose what to do next: continue this task, create a new task, or exit Duo.',
       timestamp: Date.now(),
     });
     addTimelineEvent('converged', 'Session completed');
-
-    // Exit after a short delay to let the user see the final state
-    const timer = setTimeout(() => exit(), 3000);
-    return () => clearTimeout(timer);
   }, [stateValue]);
 
   // ── ERROR state ──
@@ -1336,7 +1145,8 @@ function SessionRunner({
     send({ type: 'RECOVERY' });
   }, [stateValue]);
 
-  // ── GOD_DECIDING: God auto-decision — instant execution (AI-driven) ──
+  // ── GOD_DECIDING: unified God decision → DECISION_READY ──
+  // Card D.1: replaces old auto-decision with GodDecisionService.makeDecision()
   useEffect(() => {
     if (stateValue !== 'GOD_DECIDING') return;
 
@@ -1359,84 +1169,257 @@ function SessionRunner({
 
     let cancelled = false;
 
-    (async () => {
-      const autoDecisionContext: AutoDecisionContext = {
-        round: ctx.round,
-        maxRounds: ctx.maxRounds,
-        taskGoal: config.task,
-        sessionDir: path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current ?? 'unknown'),
-        seq: ++auditSeqRef.current,
-        waitingReason: 'god_deciding',
-        projectDir: config.projectDir,
-        lastCoderOutput: ctx.lastCoderOutput?.slice(0, 2000) ?? undefined,
-        lastReviewerOutput: ctx.lastReviewerOutput?.slice(0, 2000) ?? undefined,
-        currentPhaseId: currentPhaseId ?? undefined,
-        currentPhaseType: currentPhaseId
-          ? taskAnalysis?.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType'] | undefined
-          : undefined,
-        phases: taskAnalysis?.phases?.map(phase => ({
-          id: phase.id,
-          name: phase.name,
-          type: phase.type as 'explore' | 'code' | 'discuss' | 'review' | 'debug',
-          description: phase.description,
-        })),
-        convergenceLog: convergenceLogRef.current.map((entry) => ({
-          round: entry.round,
-          classification: entry.classification,
-          blockingIssueCount: entry.blockingIssueCount,
-        })),
-        unresolvedIssues: lastUnresolvedIssuesRef.current,
-      };
-
-      const { result, usedGod, notification } = await withGodFallback(
-        degradationManagerRef.current,
-        async () => makeAutoDecision(godAdapterRef.current, autoDecisionContext, evaluateRules),
-        () => makeLocalAutoDecision(autoDecisionContext, evaluateRules),
-        'process_exit',
-      );
-
+    // Bug 4 fix: GOD_DECIDING timeout — fallback to MANUAL_FALLBACK if God hangs
+    const GOD_DECIDING_TIMEOUT_MS = 120_000; // 2 minutes
+    const timeoutId = setTimeout(() => {
       if (cancelled) return;
-
-      if (notification) {
-        addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
-      }
-
-      const autoResult = result as Awaited<ReturnType<typeof makeAutoDecision>>;
-
-      if (autoResult.blocked) {
-        send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
-        addMessage({
-          role: 'system',
-          content: 'Autonomous decision blocked by rule engine. Manual fallback.',
-          timestamp: Date.now(),
-        });
-        return;
-      }
-
-      if (autoResult.decision.action === 'accept') {
-        addMessage({
-          role: 'system',
-          content: `${usedGod ? 'God' : 'Local fallback'}: accepting output. ${autoResult.decision.reasoning}`,
-          timestamp: Date.now(),
-        });
-        addTimelineEvent('converged', 'God auto-decision: accept');
-        send({ type: 'USER_CONFIRM', action: 'accept' });
-        return;
-      }
-
-      pendingInstructionRef.current = autoResult.decision.instruction ?? null;
-      lastUnresolvedIssuesRef.current = [];
+      cancelled = true;
       addMessage({
         role: 'system',
-        content: `${usedGod ? 'God' : 'Local fallback'}: continue -> "${autoResult.decision.instruction ?? ''}"`,
+        content: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s. ${manualWaitingMsg}`,
         timestamp: Date.now(),
       });
-      addTimelineEvent('coding', 'God auto-decision: continue_with_instruction');
-      send({ type: 'USER_CONFIRM', action: 'continue' });
+      degradationManagerRef.current.handleGodFailure(
+        { kind: 'timeout', message: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s` },
+      );
+      send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+    }, GOD_DECIDING_TIMEOUT_MS);
+
+    (async () => {
+      try {
+        const godCallStart = Date.now();
+        const service = godDecisionServiceRef.current;
+
+        // Bug 11 fix: inject phase plan so God can follow phase sequence
+        const currentPhaseType = currentPhaseId && taskAnalysisRef.current?.phases
+          ? taskAnalysisRef.current.phases.find(p => p.id === currentPhaseId)?.type as GodDecisionContext['currentPhaseType']
+          : undefined;
+
+        const decisionContext: GodDecisionContext = {
+          taskGoal: config.task,
+          currentPhaseId: currentPhaseId ?? 'default',
+          currentPhaseType,
+          phases: taskAnalysisRef.current?.phases ?? undefined,
+          round: ctx.round,
+          maxRounds: ctx.maxRounds,
+          previousDecisions: ctx.lastDecision ? [ctx.lastDecision] : [],
+          availableAdapters: [config.coder, config.reviewer],
+          activeRole: ctx.activeProcess,
+          sessionDir: getSessionDir(),
+        };
+
+        const envelope = await service.makeDecision(ctx.currentObservations, decisionContext);
+
+        if (cancelled) return;
+        clearTimeout(timeoutId);
+
+        setGodLatency(Date.now() - godCallStart);
+
+        // Log decision to UI
+        const actionSummary = envelope.actions.map(a => a.type).join(', ') || 'no actions';
+        addMessage({
+          role: 'system',
+          content: `God decision: ${envelope.diagnosis.summary} [${actionSummary}]`,
+          timestamp: Date.now(),
+        });
+        addTimelineEvent('coding', `God decision: ${actionSummary}`);
+
+        // BUG-7/8 fix: Route ALL envelope messages via dispatchMessages (Card C.3)
+        const dispatchResult = dispatchMessages(envelope.messages, {
+          pendingCoderMessage: pendingInstructionRef.current,
+          // BUG-17 fix: pass current ref value instead of null (consistent with pendingCoderMessage)
+          pendingReviewerMessage: pendingReviewerInstructionRef.current,
+          displayToUser: (message: string) => {
+            addMessage({ role: 'system', content: message, timestamp: Date.now() });
+          },
+          auditLogger: godAuditLoggerRef.current!,
+          round: ctx.round,
+        });
+
+        // Apply dispatched pending messages
+        if (dispatchResult.pendingCoderMessage) {
+          pendingInstructionRef.current = dispatchResult.pendingCoderMessage;
+        }
+        // BUG-11 fix: save reviewer pending message from dispatch
+        if (dispatchResult.pendingReviewerMessage) {
+          pendingReviewerInstructionRef.current = dispatchResult.pendingReviewerMessage;
+        }
+
+        // BUG-7/8 fix: Run NL invariant checks (Card D.3, FR-016)
+        const nlViolations = checkNLInvariantViolations(
+          envelope.messages,
+          envelope.actions,
+          { round: ctx.round, phaseId: envelope.diagnosis.currentPhaseId },
+        );
+        for (const violation of nlViolations) {
+          addMessage({
+            role: 'system',
+            content: `NL invariant violation: ${violation.summary}`,
+            timestamp: Date.now(),
+          });
+        }
+
+        // BUG-7/8 fix: Log complete envelope decision audit (Card F.2)
+        if (godAuditLoggerRef.current) {
+          logEnvelopeDecision(godAuditLoggerRef.current, {
+            round: ctx.round,
+            observations: ctx.currentObservations,
+            envelope,
+            executionResults: [],
+          });
+        }
+
+        send({ type: 'DECISION_READY', envelope });
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (cancelled) return;
+
+        addMessage({
+          role: 'system',
+          content: `God decision failed: ${err instanceof Error ? err.message : String(err)}. ${manualWaitingMsg}`,
+          timestamp: Date.now(),
+        });
+        send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
+      }
+    })();
+
+    return () => { cancelled = true; clearTimeout(timeoutId); };
+  }, [stateValue, showPhaseTransition, reclassifyTrigger]);
+
+  // ── EXECUTING: run GodActions via Hand executor, send EXECUTION_COMPLETE ──
+  // Card D.1: Hand executor runs actions sequentially, results flow back as observations
+  useEffect(() => {
+    if (stateValue !== 'EXECUTING') return;
+
+    const envelope = ctx.lastDecision;
+    if (!envelope) {
+      send({ type: 'PROCESS_ERROR', error: 'No decision envelope in EXECUTING state' });
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const handContext: HandExecutionContext = {
+          currentPhaseId: currentPhaseId ?? 'default',
+          pendingCoderMessage: pendingInstructionRef.current,
+          pendingReviewerMessage: null,
+          adapters: new Map<string, { kill(): Promise<void> }>([
+            ['coder', coderAdapterRef.current],
+            ['reviewer', reviewerAdapterRef.current],
+          ]),
+          auditLogger: godAuditLoggerRef.current,
+          activeRole: ctx.activeProcess,
+          taskCompleted: false,
+          waitState: { active: false, reason: null, estimatedSeconds: null },
+          clarificationState: { active: false, question: null },
+          interruptResumeStrategy: null,
+          adapterConfig: new Map([
+            ['coder', config.coder],
+            ['reviewer', config.reviewer],
+          ]),
+          round: ctx.round,
+          sessionDir: getSessionDir(),
+          cwd: config.projectDir,
+          // BUG-15 fix: pass envelope messages so accept_task D.3 validation runs
+          envelopeMessages: envelope.messages,
+        };
+
+        const results = await executeActions(envelope.actions, handContext);
+
+        if (cancelled) return;
+
+        // Apply side effects from hand executor back to orchestration state
+        if (handContext.pendingCoderMessage && handContext.pendingCoderMessage !== pendingInstructionRef.current) {
+          pendingInstructionRef.current = handContext.pendingCoderMessage;
+        }
+        // BUG-11 fix: save reviewer pending message from hand executor
+        if (handContext.pendingReviewerMessage && handContext.pendingReviewerMessage !== pendingReviewerInstructionRef.current) {
+          pendingReviewerInstructionRef.current = handContext.pendingReviewerMessage;
+        }
+        if (handContext.currentPhaseId !== (currentPhaseId ?? 'default')) {
+          setCurrentPhaseId(handContext.currentPhaseId);
+          // Bug 3 fix: clear unresolvedIssues on phase transition
+          lastUnresolvedIssuesRef.current = [];
+        }
+
+        // Bug 3 fix: clear unresolvedIssues on accept_task or convergence
+        if (handContext.taskCompleted || envelope.actions.some(a => a.type === 'accept_task')) {
+          lastUnresolvedIssuesRef.current = [];
+        }
+
+        // Card E.2: Display God's clarification question with styled formatting
+        if (handContext.clarificationState.active && handContext.clarificationState.question) {
+          const clarificationLines = formatGodMessage(
+            handContext.clarificationState.question,
+            'clarification',
+          );
+          const roundLabel = ctx.clarificationRound > 0
+            ? ` (round ${ctx.clarificationRound + 1})`
+            : '';
+          addMessage({
+            role: 'system',
+            content: clarificationLines.join('\n') + roundLabel,
+            timestamp: Date.now(),
+          });
+        }
+
+        // BUG-12 fix: detect conflicting routing actions in envelope
+        const routingConflicts = detectRoutingConflicts(envelope);
+        if (routingConflicts.length > 0) {
+          const conflictObs: import('../../types/observation.js').Observation = {
+            source: 'runtime',
+            type: 'runtime_invariant_violation',
+            summary: `Multiple routing actions in single envelope: [${routingConflicts.join(', ')}]. Only first will be used for routing.`,
+            severity: 'warning',
+            timestamp: new Date().toISOString(),
+            round: ctx.round,
+            phaseId: currentPhaseId ?? 'default',
+          };
+          results.push(conflictObs);
+          addMessage({
+            role: 'system',
+            content: `Warning: ${conflictObs.summary}`,
+            timestamp: Date.now(),
+          });
+        }
+
+        const actionSummary = envelope.actions.map(a => a.type).join(', ');
+        addTimelineEvent('coding', `Executed: ${actionSummary}`);
+
+        // Bug 6 fix: apply actual delay for wait action to prevent hot loop
+        if (handContext.waitState.active) {
+          const waitSeconds = Math.min(
+            Math.max(handContext.waitState.estimatedSeconds ?? 10, 5),
+            60,
+          ); // clamp to 5-60 seconds
+          addMessage({
+            role: 'system',
+            content: `God: waiting ${waitSeconds}s — ${handContext.waitState.reason ?? 'pending'}`,
+            timestamp: Date.now(),
+          });
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, waitSeconds * 1000);
+            // Allow cancellation during wait
+            const checkCancelled = setInterval(() => {
+              if (cancelled) { clearTimeout(timer); clearInterval(checkCancelled); resolve(); }
+            }, 500);
+            // Clean up interval when timer completes
+            setTimeout(() => clearInterval(checkCancelled), waitSeconds * 1000 + 100);
+          });
+          if (cancelled) return;
+        }
+
+        send({ type: 'EXECUTION_COMPLETE', results });
+      } catch (err) {
+        if (cancelled) return;
+        send({ type: 'PROCESS_ERROR', error: `Execution error: ${err instanceof Error ? err.message : String(err)}` });
+      }
     })();
 
     return () => { cancelled = true; };
-  }, [stateValue, showPhaseTransition, reclassifyTrigger]);
+  }, [stateValue]);
 
   // ── Handle user input ──
   const handleInputSubmit = useCallback(
@@ -1530,7 +1513,7 @@ function SessionRunner({
                   content: `God: restarting current attempt - ${classification.instruction}`,
                   timestamp: Date.now(),
                 });
-                send({ type: 'USER_INPUT', input: classification.instruction, resumeAs: 'coder' });
+                send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { round: ctx.round, severity: 'info', rawRef: classification.instruction })] });
                 return;
               }
 
@@ -1539,28 +1522,27 @@ function SessionRunner({
                 content: `God: ${classification.intent} - ${classification.instruction}`,
                 timestamp: Date.now(),
               });
-              send({
-                type: 'USER_INPUT',
-                input: classification.instruction,
-                resumeAs: lastInterruptedRoleRef.current ?? 'coder',
-              });
+              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', classification.instruction, { round: ctx.round, severity: 'info', rawRef: classification.instruction })] });
             } catch {
               pendingInstructionRef.current = text;
-              send({
-                type: 'USER_INPUT',
-                input: text,
-                resumeAs: lastInterruptedRoleRef.current ?? 'coder',
-              });
+              send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { round: ctx.round, severity: 'info', rawRef: text })] });
             }
           })();
         } else {
           pendingInstructionRef.current = text;
-          send({
-            type: 'USER_INPUT',
-            input: text,
-            resumeAs: lastInterruptedRoleRef.current ?? 'coder',
-          });
+          send({ type: 'OBSERVATIONS_READY', observations: [createObservation('clarification_answer', 'human', text, { round: ctx.round, severity: 'info', rawRef: text })] });
         }
+        return;
+      }
+
+      // Card E.2: CLARIFYING — user answers God's clarification question
+      if (stateValue === 'CLARIFYING') {
+        const obs = createObservation('clarification_answer', 'human', text, {
+          round: ctx.round,
+          severity: 'info',
+          rawRef: text,
+        });
+        send({ type: 'OBSERVATIONS_READY', observations: [obs] });
         return;
       }
     },
@@ -1569,38 +1551,6 @@ function SessionRunner({
 
   // ── Handle Ctrl+C interrupt ──
   const handleInterrupt = useCallback(() => {
-    const now = Date.now();
-    const timeSinceLast = now - lastCtrlCRef.current;
-    lastCtrlCRef.current = now;
-
-    // Double Ctrl+C: exit
-    if (timeSinceLast <= 500) {
-      // Save session before exit
-      if (sessionIdRef.current) {
-        try {
-          const ca = coderAdapterRef.current;
-          const ra = reviewerAdapterRef.current;
-          sessionManagerRef.current.saveState(sessionIdRef.current, {
-            round: ctx.round,
-            status: 'interrupted',
-            currentRole: ctx.activeProcess ?? 'coder',
-            ...(isSessionCapable(ca) && ca.getLastSessionId()
-              ? { coderSessionId: ca.getLastSessionId()! }
-              : {}),
-            ...(isSessionCapable(ra) && ra.getLastSessionId()
-              ? { reviewerSessionId: ra.getLastSessionId()! }
-              : {}),
-            ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
-            godConvergenceLog: convergenceLogRef.current,
-            degradationState: degradationManagerRef.current.serializeState(),
-            currentPhaseId,
-          });
-        } catch { /* best-effort */ }
-      }
-      exit();
-      return;
-    }
-
     // Single Ctrl+C: interrupt current process
     if (stateValue === 'CODING' || stateValue === 'REVIEWING') {
       const adapter =
@@ -1622,6 +1572,56 @@ function SessionRunner({
       send({ type: 'USER_INTERRUPT' });
     }
   }, [stateValue, ctx, send, exit, addMessage, addTimelineEvent]);
+
+  const saveStateForExit = useCallback(() => {
+    if (!sessionIdRef.current) return;
+
+    try {
+      const ca = coderAdapterRef.current;
+      const ra = reviewerAdapterRef.current;
+      sessionManagerRef.current.saveState(sessionIdRef.current, {
+        round: ctx.round,
+        status: stateValue === 'DONE' ? 'done' : 'interrupted',
+        currentRole: ctx.activeProcess ?? 'coder',
+        ...(isSessionCapable(ca) && ca.getLastSessionId()
+          ? { coderSessionId: ca.getLastSessionId()! }
+          : {}),
+        ...(isSessionCapable(ra) && ra.getLastSessionId()
+          ? { reviewerSessionId: ra.getLastSessionId()! }
+          : {}),
+        ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
+        godConvergenceLog: convergenceLogRef.current,
+        degradationState: degradationManagerRef.current.serializeState(),
+        currentPhaseId,
+      });
+    } catch {
+      // Best-effort persistence before exit.
+    }
+  }, [ctx.round, ctx.activeProcess, stateValue, currentPhaseId]);
+
+  const handleSafeExit = useCallback(async () => {
+    await performSafeShutdown({
+      outputManager: outputManagerRef.current,
+      adapters: [
+        coderAdapterRef.current,
+        reviewerAdapterRef.current,
+        godAdapterRef.current,
+      ],
+      beforeExit: saveStateForExit,
+      onExit: () => exit(),
+    });
+  }, [saveStateForExit, exit]);
+
+  useEffect(() => {
+    registerGlobalCtrlCHandlers({
+      interrupt: handleInterrupt,
+      safeExit: handleSafeExit,
+    });
+
+    return () => {
+      registerGlobalCtrlCHandlers(null);
+    };
+  }, [registerGlobalCtrlCHandlers, handleInterrupt, handleSafeExit]);
 
   // ── TaskAnalysisCard confirm handler ──
   const handleTaskAnalysisConfirm = useCallback(
@@ -1900,7 +1900,6 @@ function SessionRunner({
       rows={rows}
       isLLMRunning={isLLMRunning}
       onInputSubmit={handleInputSubmit}
-      onInterrupt={handleInterrupt}
       onNewSession={() => {
         // Not implemented in v1: would need to reset state
       }}
@@ -1921,6 +1920,17 @@ function SessionRunner({
       }}
       contextData={contextData}
       timelineEvents={timelineEvents}
+      footer={stateValue === 'DONE' ? (
+        <CompletionScreen
+          currentTask={config.task}
+          onContinueCurrentTask={onContinueCurrentTask}
+          onCreateNewTask={onCreateNewTask}
+          onExit={() => exit()}
+          variant="inline"
+        />
+      ) : undefined}
+      footerHeight={stateValue === 'DONE' ? 6 : undefined}
+      suspendGlobalKeys={stateValue === 'DONE'}
     />
   );
 }

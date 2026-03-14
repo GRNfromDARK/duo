@@ -4,6 +4,7 @@
  *
  * God analyzes Coder/Reviewer output and decides next routing action.
  * Maps God actions to XState events.
+ * AI-REVIEW: 路由决策仅通过结构化 GodPostCoderDecision/GodPostReviewerDecision 驱动，不从自然语言推断状态变化 (FR-003 AC-009)。
  */
 
 import type { GodAdapter } from '../types/god-adapter.js';
@@ -13,7 +14,11 @@ import { extractWithRetry } from '../parsers/god-json-extractor.js';
 import { generateGodDecisionPrompt, type GodDecisionContext, type ConvergenceLogEntry } from './god-prompt-generator.js';
 import { appendAuditLog, type GodAuditEntry } from './god-audit.js';
 import { checkConsistency } from './consistency-checker.js';
-import type { WorkflowEvent } from '../engine/workflow-machine.js';
+// Card D.1: DeprecatedRoutingEvent no longer includes old routing events (ROUTE_TO_REVIEW, etc.)
+// This module is deprecated — routing now flows through GodDecisionService + OBSERVING pipeline.
+// Using 'any' for backward compatibility with existing tests.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DeprecatedRoutingEvent = any;
 import { collectGodAdapterOutput } from './god-call.js';
 
 // ── Types ──
@@ -30,13 +35,13 @@ export interface RoutingContext {
 }
 
 export interface PostCoderRoutingResult {
-  event: WorkflowEvent;
+  event: DeprecatedRoutingEvent;
   decision: GodPostCoderDecision;
   rawOutput: string;
 }
 
 export interface PostReviewerRoutingResult {
-  event: WorkflowEvent;
+  event: DeprecatedRoutingEvent;
   decision: GodPostReviewerDecision;
   rawOutput: string;
 }
@@ -62,7 +67,7 @@ function defaultPostReviewer(reviewerOutput: string): GodPostReviewerDecision {
 
 export function godActionToEvent(
   decision: GodPostCoderDecision | GodPostReviewerDecision,
-): WorkflowEvent {
+): DeprecatedRoutingEvent {
   switch (decision.action) {
     case 'continue_to_review':
       return { type: 'ROUTE_TO_REVIEW' };
@@ -116,6 +121,12 @@ export async function routePostCoder(
     systemPrompt,
     projectDir: context.projectDir,
     timeoutMs: GOD_TIMEOUT_MS,
+    logging: {
+      sessionDir: context.sessionDir,
+      round: context.round,
+      kind: 'god_post_coder',
+      meta: { attempt: 1 },
+    },
   });
 
   const result = await extractWithRetry(
@@ -129,6 +140,12 @@ export async function routePostCoder(
         systemPrompt,
         projectDir: context.projectDir,
         timeoutMs: GOD_TIMEOUT_MS,
+        logging: {
+          sessionDir: context.sessionDir,
+          round: context.round,
+          kind: 'god_post_coder',
+          meta: { attempt: 2, retryReason: 'schema_validation' },
+        },
       });
     },
   );
@@ -178,6 +195,12 @@ export async function routePostReviewer(
     systemPrompt,
     projectDir: context.projectDir,
     timeoutMs: GOD_TIMEOUT_MS,
+    logging: {
+      sessionDir: context.sessionDir,
+      round: context.round,
+      kind: 'god_post_reviewer',
+      meta: { attempt: 1 },
+    },
   });
 
   const result = await extractWithRetry(
@@ -191,6 +214,12 @@ export async function routePostReviewer(
         systemPrompt,
         projectDir: context.projectDir,
         timeoutMs: GOD_TIMEOUT_MS,
+        logging: {
+          sessionDir: context.sessionDir,
+          round: context.round,
+          kind: 'god_post_reviewer',
+          meta: { attempt: 2, retryReason: 'schema_validation' },
+        },
       });
     },
   );

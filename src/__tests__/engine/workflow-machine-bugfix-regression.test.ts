@@ -1,10 +1,13 @@
 /**
  * Regression tests for audited bugs BUG-1 through BUG-4.
+ * Adapted for Card D.1 Observe → Decide → Act topology.
  *
  * BUG-1 [P1]: CLEAR_PENDING_PHASE must reset pendingPhaseId in GOD_DECIDING
- * BUG-2 [P1]: (React-level) auto-decision should not fire during phase transition — tested via state assertions
- * BUG-3 [P2]: (React-level) stale closure dedup — tested via state/message logic extraction
- * BUG-4 [P2]: INTERRUPTED → recovery path on reclassify cancel (USER_INPUT resumeAs)
+ * BUG-4 [P2]: CLARIFYING → recovery path on reclassify cancel (USER_INPUT resumeAs)
+ *
+ * Note: BUG-2 and BUG-3 are React-level bugs tested via state assertions.
+ * Phase transition is now handled via God's set_phase action, not PHASE_TRANSITION event.
+ * CLEAR_PENDING_PHASE still works in GOD_DECIDING for backward compatibility.
  */
 import { describe, it, expect } from 'vitest';
 import { createActor } from 'xstate';
@@ -12,22 +15,34 @@ import {
   workflowMachine,
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
+import type { Observation } from '../../types/observation.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 
-/** Helper: create + start actor */
 function startActor(context?: Partial<WorkflowContext>) {
   const actor = createActor(workflowMachine, { input: context });
   actor.start();
   return actor;
 }
 
-/** Helper: advance to GOD_DECIDING via phase transition */
-function advanceToPhaseTransitionWaiting(actor: ReturnType<typeof startActor>) {
+function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+}
+
+function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
+  return {
+    diagnosis: { summary: 'test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
+    authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+    actions,
+    messages: [{ target: 'system_log', content: 'log' }],
+  };
+}
+
+/** Advance to GOD_DECIDING via normal code completion */
+function advanceToGodDeciding(actor: ReturnType<typeof startActor>) {
   actor.send({ type: 'START_TASK', prompt: 'compound task' });
   actor.send({ type: 'TASK_INIT_SKIP' });
-  actor.send({ type: 'CODE_COMPLETE', output: 'done phase 1' });
-  actor.send({ type: 'ROUTE_TO_REVIEW' });
-  actor.send({ type: 'REVIEW_COMPLETE', output: 'phase 1 reviewed' });
-  actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'p2', summary: 'Implementation phase' });
+  actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+  actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 }
 
 // ──────────────────────────────────────────────
@@ -35,89 +50,49 @@ function advanceToPhaseTransitionWaiting(actor: ReturnType<typeof startActor>) {
 // ──────────────────────────────────────────────
 describe('BUG-1 regression: CLEAR_PENDING_PHASE event', () => {
   it('CLEAR_PENDING_PHASE resets pendingPhaseId and pendingPhaseSummary to null', () => {
-    const actor = startActor();
-    advanceToPhaseTransitionWaiting(actor);
+    const actor = startActor({ pendingPhaseId: 'p2', pendingPhaseSummary: 'Implementation phase' });
+    actor.send({ type: 'START_TASK', prompt: 'test' });
+    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
-    // Verify pending fields are set
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBe('p2');
-    expect(actor.getSnapshot().context.pendingPhaseSummary).toBe('Implementation phase');
 
-    // Cancel → send CLEAR_PENDING_PHASE
     actor.send({ type: 'CLEAR_PENDING_PHASE' });
 
-    // Should still be in GOD_DECIDING (self-transition, no target change)
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
     expect(actor.getSnapshot().context.pendingPhaseSummary).toBeNull();
     actor.stop();
   });
 
-  it('after CLEAR_PENDING_PHASE, USER_CONFIRM continue takes normal path (no phase switch)', () => {
-    const actor = startActor();
-    advanceToPhaseTransitionWaiting(actor);
-
-    // Cancel: clear pending phase
-    actor.send({ type: 'CLEAR_PENDING_PHASE' });
-
-    // Now continue — should use confirmContinue guard (no phase), NOT confirmContinueWithPhase
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    expect(actor.getSnapshot().value).toBe('CODING');
-    // taskPrompt should remain the original, not overwritten with phase info
-    expect(actor.getSnapshot().context.taskPrompt).toBe('compound task');
-    expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
-    actor.stop();
-  });
-
   it('CLEAR_PENDING_PHASE is a no-op when pendingPhaseId is already null', () => {
     const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'simple task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor.send({ type: 'CONVERGED' });
+    advanceToGodDeciding(actor);
 
-    // In GOD_DECIDING with no pending phase
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
 
-    // CLEAR_PENDING_PHASE should not break anything
     actor.send({ type: 'CLEAR_PENDING_PHASE' });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
-    actor.stop();
-  });
-
-  it('ghost pendingPhaseId scenario: without CLEAR_PENDING_PHASE, continue triggers phase switch', () => {
-    // This test documents the bug behavior that CLEAR_PENDING_PHASE fixes.
-    // Without clearing, USER_CONFIRM continue would hit confirmContinueWithPhase guard.
-    const actor = startActor();
-    advanceToPhaseTransitionWaiting(actor);
-
-    // Do NOT clear → simulate the old buggy path
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
-
-    // With ghost pendingPhaseId, it takes the phase transition path
-    expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.taskPrompt).toContain('p2');
-    // BUG-16 fix: taskPrompt preserves original task, not God's reasoning
-    expect(actor.getSnapshot().context.taskPrompt).toContain('compound task');
     actor.stop();
   });
 });
 
 // ──────────────────────────────────────────────
 // BUG-2: Phase transition context check in GOD_DECIDING
-// (React useEffect test — we verify the XState context is available for the guard)
 // ──────────────────────────────────────────────
 describe('BUG-2 regression: pendingPhaseId visible in context for guard checks', () => {
-  it('context.pendingPhaseId is accessible to determine if phase transition is pending', () => {
-    const actor = startActor();
-    advanceToPhaseTransitionWaiting(actor);
+  it('context.pendingPhaseId is accessible when set via input', () => {
+    const actor = startActor({ pendingPhaseId: 'p2' });
+    actor.send({ type: 'START_TASK', prompt: 'test' });
+    actor.send({ type: 'TASK_INIT_SKIP' });
+    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
 
     const ctx = actor.getSnapshot().context;
-    // This is the check App.tsx useEffect should use to skip auto-decision
     expect(ctx.pendingPhaseId).not.toBeNull();
     expect(ctx.pendingPhaseId).toBe('p2');
     actor.stop();
@@ -125,12 +100,7 @@ describe('BUG-2 regression: pendingPhaseId visible in context for guard checks',
 
   it('context.pendingPhaseId is null when entering GOD_DECIDING without phase transition', () => {
     const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor.send({ type: 'CONVERGED' });
+    advanceToGodDeciding(actor);
 
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
     expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
@@ -139,52 +109,50 @@ describe('BUG-2 regression: pendingPhaseId visible in context for guard checks',
 });
 
 // ──────────────────────────────────────────────
-// BUG-4: INTERRUPTED → recovery via USER_INPUT on reclassify cancel
+// BUG-4 regression: CLARIFYING recovery
+// Card E.2: adapted — CLARIFYING reached via request_user_input, recovery via OBSERVATIONS_READY → GOD_DECIDING
 // ──────────────────────────────────────────────
-describe('BUG-4 regression: INTERRUPTED recovery on reclassify cancel', () => {
-  it('USER_INPUT with resumeAs=coder recovers from INTERRUPTED to CODING', () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-
-    // Simulate Ctrl+R during CODING: interrupt → INTERRUPTED
-    actor.send({ type: 'USER_INTERRUPT' });
-    expect(actor.getSnapshot().value).toBe('INTERRUPTED');
-
-    // Simulate reclassify cancel → should send USER_INPUT to resume
-    actor.send({ type: 'USER_INPUT', input: 'Reclassification cancelled, resuming', resumeAs: 'coder' });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    actor.stop();
-  });
-
-  it('USER_INPUT with resumeAs=reviewer recovers from INTERRUPTED to REVIEWING', () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'test' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
+describe('BUG-4 regression: CLARIFYING recovery via observation pipeline', () => {
+  /** Helper: advance from CODING to CLARIFYING via request_user_input */
+  function advanceToClarifying(actor: ReturnType<typeof startActor>) {
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs()] });
+    actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'request_user_input', question: 'what?' }]) });
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
+  }
 
-    // Simulate Ctrl+R during REVIEWING: interrupt → INTERRUPTED
-    actor.send({ type: 'USER_INTERRUPT' });
-    expect(actor.getSnapshot().value).toBe('INTERRUPTED');
-
-    // Simulate reclassify cancel → should send USER_INPUT to resume
-    actor.send({ type: 'USER_INPUT', input: 'Reclassification cancelled, resuming', resumeAs: 'reviewer' });
-    expect(actor.getSnapshot().value).toBe('REVIEWING');
-    actor.stop();
-  });
-
-  it('without recovery event, INTERRUPTED state persists (documents the bug)', () => {
+  it('OBSERVATIONS_READY with clarification_answer recovers CLARIFYING to GOD_DECIDING', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
-    actor.send({ type: 'USER_INTERRUPT' });
+    advanceToClarifying(actor);
+    expect(actor.getSnapshot().value).toBe('CLARIFYING');
 
-    expect(actor.getSnapshot().value).toBe('INTERRUPTED');
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('clarification_answer', 'human')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+    actor.stop();
+  });
 
-    // Without sending USER_INPUT, we're stuck in INTERRUPTED
-    // This documents why BUG-4 fix is needed: handleReclassifyCancel must send USER_INPUT
-    expect(actor.getSnapshot().value).toBe('INTERRUPTED');
+  it('without OBSERVATIONS_READY, CLARIFYING state persists', () => {
+    const actor = startActor();
+    actor.send({ type: 'START_TASK', prompt: 'test' });
+    actor.send({ type: 'TASK_INIT_SKIP' });
+    advanceToClarifying(actor);
+
+    expect(actor.getSnapshot().value).toBe('CLARIFYING');
+    // No event sent — should stay CLARIFYING
+    expect(actor.getSnapshot().value).toBe('CLARIFYING');
+    actor.stop();
+  });
+
+  it('interrupt during CODING goes through INCIDENT_DETECTED → OBSERVING (not INTERRUPTED)', () => {
+    const actor = startActor();
+    actor.send({ type: 'START_TASK', prompt: 'test' });
+    actor.send({ type: 'TASK_INIT_SKIP' });
+
+    // Card E.1: interrupts go through observation pipeline, not USER_INTERRUPT
+    actor.send({ type: 'INCIDENT_DETECTED', observation: makeObs('human_interrupt', 'human') });
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
     actor.stop();
   });
 });

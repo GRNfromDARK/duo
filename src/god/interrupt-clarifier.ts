@@ -46,6 +46,12 @@ export async function classifyInterruptIntent(
       systemPrompt: INTERRUPT_SYSTEM_PROMPT,
       projectDir: context.projectDir,
       timeoutMs: GOD_TIMEOUT_MS,
+      logging: {
+        sessionDir: context.sessionDir,
+        round: context.round,
+        kind: 'god_interrupt_classification',
+        meta: { attempt: 1 },
+      },
     });
     const parsed = parseInterruptResponse(rawOutput);
 

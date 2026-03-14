@@ -17,6 +17,7 @@ import type { SessionConfig } from '../types/session.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
 import type { DegradationState } from '../god/degradation-manager.js';
+import { PROMPT_LOG_FILENAME } from './prompt-log.js';
 
 export interface SessionMetadata {
   id: string;
@@ -49,6 +50,11 @@ export interface SessionState {
   degradationState?: DegradationState;
   /** Current phase ID for compound tasks — persisted for duo resume */
   currentPhaseId?: string | null;
+  /** Card E.2: Clarification context — persisted for duo resume when in CLARIFYING state */
+  clarification?: {
+    frozenActiveProcess: 'coder' | 'reviewer' | null;
+    clarificationRound: number;
+  };
 }
 
 export interface HistoryEntry {
@@ -194,6 +200,7 @@ export class SessionManager {
     atomicWriteSync(path.join(sessionDir, 'snapshot.json'), JSON.stringify(snapshot, null, 2));
     // Initialize empty history
     fs.writeFileSync(path.join(sessionDir, 'history.jsonl'), '');
+    fs.writeFileSync(path.join(sessionDir, PROMPT_LOG_FILENAME), '');
 
     // Also write legacy files for backward compatibility during transition
     fs.writeFileSync(path.join(sessionDir, 'session.json'), JSON.stringify(metadata, null, 2));

@@ -7,20 +7,22 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
+import type { OutputChunk } from '../../types/adapter.js';
+import type { GodAdapter, GodExecOptions } from '../../types/god-adapter.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { GodAuditEntry } from '../../god/god-audit.js';
 
-// ── Helper: create a mock CLIAdapter that returns specified output ──
+// ── Helper: create a mock GodAdapter that returns specified output ──
 
-function createMockAdapter(output: string): CLIAdapter {
+function createMockAdapter(output: string): GodAdapter {
   return {
     name: 'mock-god',
     displayName: 'Mock God',
     version: '1.0.0',
+    toolUsePolicy: 'forbid',
     isInstalled: async () => true,
     getVersion: async () => '1.0.0',
-    execute(_prompt: string, _opts: ExecOptions): AsyncIterable<OutputChunk> {
+    execute(_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
       const chunks: OutputChunk[] = [
         { type: 'text', content: output, timestamp: Date.now() },
       ];
@@ -90,7 +92,7 @@ describe('initializeTask', () => {
     let callCount = 0;
     const adapter = createMockAdapter(badOutput);
     // Override execute to track calls and always return bad output
-    adapter.execute = function (_prompt: string, _opts: ExecOptions): AsyncIterable<OutputChunk> {
+    adapter.execute = function (_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
       callCount++;
       const chunks: OutputChunk[] = [
         { type: 'text', content: badOutput, timestamp: Date.now() },
@@ -129,14 +131,17 @@ describe('initializeTask', () => {
 \`\`\``;
 
     let capturedCwd: string | undefined;
-    const adapter: CLIAdapter = {
+    let capturedPrompt: string | undefined;
+    const adapter: GodAdapter = {
       name: 'mock-god',
       displayName: 'Mock God',
       version: '1.0.0',
+      toolUsePolicy: 'forbid',
       isInstalled: async () => true,
       getVersion: async () => '1.0.0',
-      execute(_prompt: string, opts: ExecOptions): AsyncIterable<OutputChunk> {
+      execute(prompt: string, opts: GodExecOptions): AsyncIterable<OutputChunk> {
         capturedCwd = opts.cwd;
+        capturedPrompt = prompt;
         const chunks: OutputChunk[] = [
           { type: 'text', content: godOutput, timestamp: Date.now() },
         ];
@@ -158,6 +163,30 @@ describe('initializeTask', () => {
 
     await initializeTask(adapter, 'test', 'system prompt', '/custom/project/dir');
     expect(capturedCwd).toBe('/custom/project/dir');
+    expect(capturedPrompt).toContain('## Decision Point: TASK_INIT');
+    expect(capturedPrompt).toContain('Do not answer or solve the task itself.');
+  });
+
+  test('accepts phases set to null for non-compound tasks', async () => {
+    const { initializeTask } = await import('../../god/task-init.js');
+
+    const godOutput = `\`\`\`json
+{
+  "taskType": "explore",
+  "reasoning": "Simple exploratory classification.",
+  "phases": null,
+  "confidence": 0.9,
+  "suggestedMaxRounds": 2,
+  "terminationCriteria": ["done"]
+}
+\`\`\``;
+
+    const adapter = createMockAdapter(godOutput);
+    const result = await initializeTask(adapter, '当前项目有多少个文件', 'system prompt');
+
+    expect(result).not.toBeNull();
+    expect(result!.analysis.taskType).toBe('explore');
+    expect(result!.analysis.phases).toBeNull();
   });
 });
 
@@ -184,13 +213,14 @@ describe('test_regression_bug1_r15: rawOutput tracks retry output', () => {
 \`\`\``;
 
     let callCount = 0;
-    const adapter: CLIAdapter = {
+    const adapter: GodAdapter = {
       name: 'mock-god',
       displayName: 'Mock God',
       version: '1.0.0',
+      toolUsePolicy: 'forbid',
       isInstalled: async () => true,
       getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: ExecOptions): AsyncIterable<OutputChunk> {
+      execute(_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
         callCount++;
         const output = callCount === 1 ? badOutput : goodOutput;
         const chunks: OutputChunk[] = [
@@ -262,13 +292,14 @@ describe('test_regression_bug_r12_1: collectAdapterOutput includes error chunks'
 \`\`\``;
 
     // Adapter that splits output into text, error, and code chunks
-    const adapter: CLIAdapter = {
+    const adapter: GodAdapter = {
       name: 'mock-god',
       displayName: 'Mock God',
       version: '1.0.0',
+      toolUsePolicy: 'forbid',
       isInstalled: async () => true,
       getVersion: async () => '1.0.0',
-      execute(_prompt: string, _opts: ExecOptions): AsyncIterable<OutputChunk> {
+      execute(_prompt: string, _opts: GodExecOptions): AsyncIterable<OutputChunk> {
         const chunks: OutputChunk[] = [
           { type: 'error', content: 'Error: the task analysis shows this is a coding task.\n', timestamp: Date.now() },
           { type: 'code', content: '```json\n{\n  "taskType": "code",\n  "reasoning": "User wants to fix a bug.",\n  "confidence": 0.8,\n  "suggestedMaxRounds": 4,\n  "terminationCriteria": ["Bug is fixed", "Tests pass"]\n}\n```', timestamp: Date.now() },

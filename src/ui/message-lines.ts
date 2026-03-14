@@ -222,16 +222,45 @@ export function wrapText(text: string, width: number): string[] {
   const lines: string[] = [];
   let current = '';
   let currentWidth = 0;
+  // Track the last safe break point (after a space or before a CJK char)
+  let lastBreakPos = -1;    // index in `current` where we can break
+  let lastBreakWidth = 0;   // width at that break point
 
-  for (const char of [...text]) {
+  const chars = [...text];
+
+  for (const char of chars) {
     const charWidth = getCharWidth(char);
+    const isCJK = charWidth > 1;
+
     if (currentWidth + charWidth > width && current.length > 0) {
-      lines.push(current);
-      current = char;
-      currentWidth = charWidth;
+      // Need to break. Try word boundary first.
+      if (lastBreakPos > 0) {
+        // Break at the last word boundary
+        lines.push(current.slice(0, lastBreakPos).trimEnd());
+        const remainder = current.slice(lastBreakPos).trimStart();
+        current = remainder + char;
+        currentWidth = computeStringWidth(remainder) + charWidth;
+      } else {
+        // No word boundary found — hard break
+        lines.push(current);
+        current = char;
+        currentWidth = charWidth;
+      }
+      lastBreakPos = -1;
+      lastBreakWidth = 0;
     } else {
       current += char;
       currentWidth += charWidth;
+    }
+
+    // Update break point: space is a break opportunity (break after space),
+    // CJK characters can break between any two chars
+    if (char === ' ') {
+      lastBreakPos = current.length;
+      lastBreakWidth = currentWidth;
+    } else if (isCJK) {
+      lastBreakPos = current.length;
+      lastBreakWidth = currentWidth;
     }
   }
 
@@ -242,7 +271,15 @@ export function wrapText(text: string, width: number): string[] {
   return lines;
 }
 
-function getCharWidth(char: string): number {
+export function computeStringWidth(s: string): number {
+  let w = 0;
+  for (const ch of [...s]) {
+    w += getCharWidth(ch);
+  }
+  return w;
+}
+
+export function getCharWidth(char: string): number {
   const codePoint = char.codePointAt(0) ?? 0;
 
   if (

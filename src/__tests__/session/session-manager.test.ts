@@ -44,6 +44,7 @@ describe('SessionManager — state persistence', () => {
     const sessionDir = path.join(sessionsDir, session.id);
     expect(fs.existsSync(path.join(sessionDir, 'snapshot.json'))).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, 'history.jsonl'))).toBe(true);
+    expect(fs.existsSync(path.join(sessionDir, 'prompt-log.jsonl'))).toBe(true);
     // Legacy files also created for backward compat
     expect(fs.existsSync(path.join(sessionDir, 'session.json'))).toBe(true);
     expect(fs.existsSync(path.join(sessionDir, 'state.json'))).toBe(true);

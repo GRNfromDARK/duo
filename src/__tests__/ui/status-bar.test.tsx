@@ -36,10 +36,12 @@ describe('StatusBar', () => {
     expect(lastFrame()!).toContain('test-project');
   });
 
-  // AC-063: Display current round / max rounds
-  it('shows round info in format "Round N/Max"', () => {
+  // AC-063: Display current round / max rounds (with progress bar)
+  it('shows round info with progress bar', () => {
     const { lastFrame } = renderBar({ round: 3, maxRounds: 10 });
-    expect(lastFrame()!).toContain('Round 3/10');
+    expect(lastFrame()!).toContain('3/10');
+    // Progress bar uses █ and ░ characters
+    expect(lastFrame()!).toMatch(/[█░]/);
   });
 
   // AC-062: Spinner animation continuously displays when LLM is working

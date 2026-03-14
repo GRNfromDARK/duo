@@ -136,6 +136,13 @@ export function generateCoderPrompt(ctx: PromptContext, audit?: AuditOptions): s
 
   const sections: string[] = [];
 
+  // Card D.2: Worker role declaration (FR-009 — Coder as pure executor)
+  sections.push(`## Your Role
+You are an executor. You carry out work as instructed.
+You do NOT have accept authority — you cannot accept or complete the task.
+You do NOT decide phase switches — phase transitions are managed by God.
+Focus on producing high-quality work output. Do not make management decisions.`);
+
   // Task goal (priority 3)
   sections.push(`## Task\n${ctx.taskGoal}`);
 
@@ -227,6 +234,12 @@ export function generateReviewerPrompt(ctx: {
 
   const sections: string[] = [];
 
+  // Card D.2: Worker role declaration (FR-009, FR-010 — Reviewer as observation provider)
+  sections.push(`## Your Role
+You are a review observation provider. Your verdict ([APPROVED] or [CHANGES_REQUESTED]) is informational.
+God decides the final outcome — God may accept, override, or request further work regardless of your verdict.
+Focus on thorough, honest review. Your observations help God make the best decision.`);
+
   sections.push(`## Task\n${ctx.taskGoal}`);
 
   // Phase info for compound type
@@ -252,6 +265,16 @@ export function generateReviewerPrompt(ctx: {
 - Identify gaps in analysis or missing areas of investigation.
 - State Blocking count explicitly.
 - End with [APPROVED] or [CHANGES_REQUESTED].`);
+  } else if (effectiveType === 'review') {
+    // Bug 11 fix: proposal/plan review — validate proposals, not code
+    sections.push(`## Review Instructions
+- Evaluate whether the Coder's proposals are reasonable and aligned with the task requirements.
+- Verify the proposals address the user's stated priorities.
+- Consider whether any critical requirement was overlooked — but proposals need not be perfect to be approved.
+- APPROVE if the proposals are sound and directionally correct. Minor disagreements about priority ordering or approach details are non-blocking.
+- Only mark as Blocking if a proposal fundamentally misunderstands the task, ignores a user-specified requirement, or proposes something technically infeasible.
+- State Blocking count explicitly.
+- End with [APPROVED] or [CHANGES_REQUESTED].`);
   } else {
     sections.push(`## Review Instructions
 - Review the Coder's output against the task requirements.
@@ -260,6 +283,11 @@ export function generateReviewerPrompt(ctx: {
 - State Blocking count explicitly.
 - End with [APPROVED] or [CHANGES_REQUESTED].`);
   }
+
+  // Anti-nitpick guardrail (aligned with session template)
+  sections.push(`## Verdict Rules
+- If there are ZERO blocking issues, you MUST use [APPROVED] — do not withhold approval for non-blocking suggestions.
+- Approve when the work meets the task requirements. Do not block on style or preferences.`);
 
   sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);
 

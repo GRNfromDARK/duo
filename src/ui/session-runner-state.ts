@@ -276,6 +276,11 @@ export function buildRestoredSessionRuntime(
       taskPrompt: loaded.metadata.task,
       lastCoderOutput: getLastRoleContent(history, 'coder'),
       lastReviewerOutput: getLastRoleContent(history, 'reviewer'),
+      // BUG-16 fix: restore clarification context for CLARIFYING state resume
+      ...(loaded.state.clarification ? {
+        frozenActiveProcess: loaded.state.clarification.frozenActiveProcess,
+        clarificationRound: loaded.state.clarification.clarificationRound,
+      } : {}),
     },
     restoreEvent: mapRestoreEvent(loaded.state),
     messages,
@@ -508,6 +513,9 @@ function mapRestoreEvent(state: SessionState): RestoreEventType {
     case 'routing_post_code':
       return 'RESTORED_TO_REVIEWING';
     case 'interrupted':
+      return 'RESTORED_TO_INTERRUPTED';
+    // BUG-16 fix: CLARIFYING state maps to INTERRUPTED so user can re-provide input
+    case 'clarifying':
       return 'RESTORED_TO_INTERRUPTED';
     case 'god_deciding':
     case 'manual_fallback':

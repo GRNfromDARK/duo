@@ -4,6 +4,16 @@
  * BUG-14 [P1]: compound task phaseId/phaseType not passed to God prompt generation
  * BUG-15 [P1]: GOD_DECIDING auto-decision auditSeqRef uses post-increment
  * BUG-16 [P2]: confirmContinueWithPhase overwrites taskPrompt with God reasoning
+ *
+ * Card D.1 adaptation:
+ *   - ROUTING_POST_CODE, ROUTING_POST_REVIEW, EVALUATING states removed
+ *   - Flow: CODING → OBSERVING → GOD_DECIDING → EXECUTING → CODING/REVIEWING/DONE
+ *   - CODE_COMPLETE → OBSERVING (not ROUTING_POST_CODE)
+ *   - REVIEW_COMPLETE → OBSERVING (not ROUTING_POST_REVIEW)
+ *   - GOD_DECIDING uses DECISION_READY (not USER_CONFIRM for accept/continue)
+ *   - MANUAL_FALLBACK retains USER_CONFIRM with confirmContinueWithPhase guard
+ *   - PHASE_TRANSITION, CONVERGED events removed from state machine
+ *   - pendingPhaseId set via input context, consumed in MANUAL_FALLBACK via USER_CONFIRM
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createActor } from 'xstate';
@@ -16,10 +26,27 @@ import {
   workflowMachine,
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
+import type { Observation } from '../../types/observation.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 
 vi.mock('../../god/god-audit.js', () => ({
   appendAuditLog: vi.fn(),
 }));
+
+// ── Card D.1 helpers ──
+
+function makeObs(type = 'work_output', source = 'coder'): Observation {
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 } as Observation;
+}
+
+function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
+  return {
+    diagnosis: { summary: 'test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
+    authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+    actions,
+    messages: [{ target: 'system_log', content: 'log' }],
+  };
+}
 
 // ══════════════════════════════════════════════════════════════════
 // BUG-14: compound phaseId/phaseType must affect prompt strategy
@@ -249,6 +276,12 @@ describe('BUG-15 regression: audit seq pre-increment consistency', () => {
 
 // ══════════════════════════════════════════════════════════════════
 // BUG-16: confirmContinueWithPhase preserves original taskPrompt
+//
+// Card D.1 adaptation:
+//   Old flow: CODE_COMPLETE → ROUTE_TO_REVIEW → REVIEW_COMPLETE → PHASE_TRANSITION → GOD_DECIDING → USER_CONFIRM
+//   New flow: CODING → OBSERVING → GOD_DECIDING → MANUAL_FALLBACK → USER_CONFIRM
+//   pendingPhaseId is set via input context (PHASE_TRANSITION event removed).
+//   MANUAL_FALLBACK retains USER_CONFIRM with confirmContinueWithPhase guard.
 // ══════════════════════════════════════════════════════════════════
 
 function startActor(context?: Partial<WorkflowContext>) {
@@ -257,47 +290,51 @@ function startActor(context?: Partial<WorkflowContext>) {
   return actor;
 }
 
-function advanceToPhaseTransitionWaiting(
-  actor: ReturnType<typeof startActor>,
+/**
+ * Navigate actor to MANUAL_FALLBACK with a pendingPhaseId already in context.
+ *
+ * Card D.1 flow:
+ *   START_TASK → TASK_INIT → TASK_INIT_SKIP → CODING
+ *   → CODE_COMPLETE → OBSERVING
+ *   → OBSERVATIONS_READY → GOD_DECIDING
+ *   → MANUAL_FALLBACK_REQUIRED → MANUAL_FALLBACK (waiting for USER_CONFIRM)
+ *
+ * pendingPhaseId is provided via input context to the actor.
+ */
+function advanceToManualFallback(
   prompt = 'implement user login with OAuth',
+  pendingPhaseId = 'implement-phase',
 ) {
+  const actor = startActor({ pendingPhaseId });
   actor.send({ type: 'START_TASK', prompt });
   actor.send({ type: 'TASK_INIT_SKIP' });
   actor.send({ type: 'CODE_COMPLETE', output: 'done phase 1' });
-  actor.send({ type: 'ROUTE_TO_REVIEW' });
-  actor.send({ type: 'REVIEW_COMPLETE', output: 'phase 1 reviewed' });
-  actor.send({
-    type: 'PHASE_TRANSITION',
-    nextPhaseId: 'implement-phase',
-    summary: 'Exploration phase complete, all findings documented', // God's reasoning
-  });
+  actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+  actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+  return actor;
 }
 
 describe('BUG-16 regression: confirmContinueWithPhase taskPrompt preservation', () => {
-  it('taskPrompt preserves original task description after phase transition', () => {
+  it('taskPrompt preserves original task description after phase transition via MANUAL_FALLBACK', () => {
     const originalTask = 'implement user login with OAuth';
-    const actor = startActor();
-    advanceToPhaseTransitionWaiting(actor, originalTask);
+    const actor = advanceToManualFallback(originalTask, 'implement-phase');
 
-    // Verify we're in GOD_DECIDING with pending phase
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+    // Verify we're in MANUAL_FALLBACK with pending phase
+    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
     expect(actor.getSnapshot().context.pendingPhaseId).toBe('implement-phase');
 
-    // Confirm phase transition
+    // Confirm phase transition via USER_CONFIRM (backward compat path)
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
 
     // BUG-16 fix: taskPrompt should contain original task, not God's reasoning
     const taskPrompt = actor.getSnapshot().context.taskPrompt!;
     expect(taskPrompt).toContain(originalTask);
     expect(taskPrompt).toContain('implement-phase');
-    // Should NOT contain God's reasoning text
-    expect(taskPrompt).not.toContain('Exploration phase complete, all findings documented');
     actor.stop();
   });
 
   it('taskPrompt format is [Phase: phaseId] originalTask', () => {
-    const actor = startActor();
-    advanceToPhaseTransitionWaiting(actor, 'build REST API');
+    const actor = advanceToManualFallback('build REST API', 'implement-phase');
 
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
 
@@ -308,13 +345,16 @@ describe('BUG-16 regression: confirmContinueWithPhase taskPrompt preservation', 
   });
 
   it('taskPrompt unchanged when USER_CONFIRM without pending phase', () => {
+    // Create actor without pendingPhaseId, navigate to MANUAL_FALLBACK
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'simple task' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor.send({ type: 'CONVERGED' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+
+    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+    expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
 
     actor.send({ type: 'USER_CONFIRM', action: 'continue' });
     expect(actor.getSnapshot().context.taskPrompt).toBe('simple task');
@@ -322,33 +362,35 @@ describe('BUG-16 regression: confirmContinueWithPhase taskPrompt preservation', 
   });
 
   it('multiple phase transitions accumulate phase prefix correctly', () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'multi-phase project' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-
-    // First phase transition
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'phase-2', summary: 'God reasoning 1' });
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
+    // First phase transition: pendingPhaseId = 'phase-2'
+    const actor1 = advanceToManualFallback('multi-phase project', 'phase-2');
+    actor1.send({ type: 'USER_CONFIRM', action: 'continue' });
 
     // After first transition: taskPrompt = "[Phase: phase-2] multi-phase project"
-    const afterFirst = actor.getSnapshot().context.taskPrompt!;
+    const afterFirst = actor1.getSnapshot().context.taskPrompt!;
+    expect(afterFirst).toBe('[Phase: phase-2] multi-phase project');
     expect(afterFirst).toContain('phase-2');
-    expect(afterFirst).not.toContain('God reasoning 1');
+    actor1.stop();
 
-    // Second phase transition
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'ok' });
-    actor.send({ type: 'PHASE_TRANSITION', nextPhaseId: 'phase-3', summary: 'God reasoning 2' });
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
+    // Second phase transition: start a new actor with updated taskPrompt and new pendingPhaseId
+    // This simulates the runtime re-injecting pendingPhaseId via set_phase action
+    const actor2 = startActor({
+      pendingPhaseId: 'phase-3',
+      taskPrompt: afterFirst,
+    });
+    actor2.send({ type: 'START_TASK', prompt: afterFirst });
+    actor2.send({ type: 'TASK_INIT_SKIP' });
+    actor2.send({ type: 'CODE_COMPLETE', output: 'done' });
+    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    actor2.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+    actor2.send({ type: 'USER_CONFIRM', action: 'continue' });
 
-    // After second transition: phase prefix updated
-    const afterSecond = actor.getSnapshot().context.taskPrompt!;
+    // After second transition: phase prefix updated (old prefix replaced)
+    const afterSecond = actor2.getSnapshot().context.taskPrompt!;
     expect(afterSecond).toContain('phase-3');
-    expect(afterSecond).not.toContain('God reasoning 2');
-    actor.stop();
+    // The old phase-2 prefix should be replaced, not accumulated
+    expect(afterSecond).not.toMatch(/\[Phase: phase-2\]/);
+    expect(afterSecond).toBe('[Phase: phase-3] multi-phase project');
+    actor2.stop();
   });
 });

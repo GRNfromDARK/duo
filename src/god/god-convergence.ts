@@ -142,6 +142,12 @@ export async function evaluateConvergence(
     systemPrompt,
     projectDir: context.projectDir,
     timeoutMs: GOD_TIMEOUT_MS,
+    logging: {
+      sessionDir: context.sessionDir,
+      round: context.round,
+      kind: 'god_convergence',
+      meta: { attempt: 1 },
+    },
   });
 
   // Extract and validate God output
@@ -156,6 +162,12 @@ export async function evaluateConvergence(
         systemPrompt,
         projectDir: context.projectDir,
         timeoutMs: GOD_TIMEOUT_MS,
+        logging: {
+          sessionDir: context.sessionDir,
+          round: context.round,
+          kind: 'god_convergence',
+          meta: { attempt: 2, retryReason: 'schema_validation' },
+        },
       });
     },
   );

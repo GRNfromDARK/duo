@@ -9,6 +9,7 @@ import { DirectoryPicker } from './DirectoryPicker.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import { getInstalledGodAdapters, isSupportedGodAdapterName } from '../../god/god-adapter-config.js';
 import type { SessionConfig } from '../../types/session.js';
+import { VERSION } from '../../index.js';
 
 // ── Setup phases ──
 
@@ -27,21 +28,74 @@ export const PHASE_ORDER: SetupPhase[] = ['select-dir', 'select-coder', 'select-
 
 // ── Branded Header ──
 
-const LOGO_LINES = [
-  '  ____              ',
-  ' |  _ \\ _   _  ___  ',
-  ' | | | | | | |/ _ \\ ',
-  ' | |_| | |_| | (_) |',
-  ' |____/ \\__,_|\\___/ ',
+// Box border (2) + paddingX 3×2 (6) = 8 chars overhead.
+// Content must stay ≤ MAX_HEADER_CONTENT to fit 80-column terminals.
+export const MAX_HEADER_CONTENT = 72;
+
+export const LOGO_LINES = [
+  '  ██████╗  ██╗   ██╗  ██████╗ ',
+  '  ██╔══██╗ ██║   ██║ ██╔═══██╗',
+  '  ██║  ██║ ██║   ██║ ██║   ██║',
+  '  ██║  ██║ ██║   ██║ ██║   ██║',
+  '  ██████╔╝ ╚██████╔╝ ╚██████╔╝',
+  '  ╚═════╝   ╚═════╝   ╚═════╝ ',
 ];
 
-function BrandHeader({ version }: { version: string }): React.ReactElement {
+export const BRAND_SLOGAN = 'Coder writes. Reviewer guards. God decides.';
+
+export const FEATURE_BULLETS = [
+  'Coder × Reviewer × God — triple-agent architecture',
+  'Autonomous task decomposition & convergence',
+  'Built-in quality gates & decision routing',
+];
+
+export const SEPARATOR_WIDTH = 60;
+
+// Fixed box width: border(2) + paddingX 3×2(6) + content(62) = 70 chars.
+// Well within 80-column terminals.
+export const HEADER_BOX_WIDTH = 70;
+
+export function BrandHeader({ version }: { version: string }): React.ReactElement {
+  const tagline = '  Multi-AI Collaborative Coding Engine';
+  const versionLabel = `v${version}`;
+  const versionPad = SEPARATOR_WIDTH + 2 - tagline.length - versionLabel.length;
+
   return (
-    <Box flexDirection="column" paddingX={1}>
-      {LOGO_LINES.map((line, i) => (
-        <Text key={i} color="cyan" bold>{line}</Text>
-      ))}
-      <Text dimColor>  Multi AI Coding Assistant Collaboration  v{version}</Text>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={3}
+      paddingY={1}
+      alignSelf="flex-start"
+      width={HEADER_BOX_WIDTH}
+    >
+      <Box flexDirection="column">
+        {LOGO_LINES.map((line, i) => (
+          <Text key={i} color="cyan" bold>{line}</Text>
+        ))}
+      </Box>
+
+      <Box marginTop={1}>
+        <Text color="white" bold>{'  ' + BRAND_SLOGAN}</Text>
+      </Box>
+
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>{'  ' + '─'.repeat(SEPARATOR_WIDTH)}</Text>
+        <Box>
+          <Text dimColor>{tagline}</Text>
+          <Text dimColor>{' '.repeat(Math.max(1, versionPad))}{versionLabel}</Text>
+        </Box>
+      </Box>
+
+      <Box marginTop={1} flexDirection="column">
+        {FEATURE_BULLETS.map((bullet, i) => (
+          <Box key={i}>
+            <Text color="cyan">{'  ◆ '}</Text>
+            <Text dimColor>{bullet}</Text>
+          </Box>
+        ))}
+      </Box>
     </Box>
   );
 }
@@ -319,15 +373,13 @@ export function SetupWizard({
     task: initialConfig?.task,
   });
 
-  const version = '1.0.0';
-
   return (
     <Box flexDirection="column">
-      <BrandHeader version={version} />
+      <BrandHeader version={VERSION} />
       <ProgressStepper currentPhase={phase} />
 
       <Box marginTop={1}>
-        <Text dimColor>{'─'.repeat(52)}</Text>
+        <Text dimColor>{'─'.repeat(58)}</Text>
       </Box>
 
       <Box flexDirection="column" marginTop={1}>

@@ -7,6 +7,11 @@
  *
  * Uses mock adapters to simulate God/Coder/Reviewer CLI output.
  * Tests module integration, NOT React rendering.
+ *
+ * Updated for Card D.1 state machine topology:
+ *   CODING → OBSERVING → GOD_DECIDING → EXECUTING → CODING/REVIEWING/DONE
+ *   Removed states: ROUTING_POST_CODE, ROUTING_POST_REVIEW, EVALUATING
+ *   New events: OBSERVATIONS_READY, DECISION_READY, EXECUTION_COMPLETE, INCIDENT_DETECTED
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -21,6 +26,8 @@ import {
 } from '../../engine/workflow-machine.js';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
 import type { GodTaskAnalysis, GodPostCoderDecision, GodPostReviewerDecision, GodConvergenceJudgment, GodAutoDecision } from '../../types/god-schemas.js';
+import type { Observation } from '../../types/observation.js';
+import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
 import { routePostCoder, routePostReviewer } from '../../god/god-router.js';
 import { evaluateConvergence, type ConvergenceLogEntry } from '../../god/god-convergence.js';
@@ -58,6 +65,21 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
+
+/** Create a test Observation. */
+function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+}
+
+/** Create a test GodDecisionEnvelope. */
+function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
+  return {
+    diagnosis: { summary: 'test', currentGoal: 'test', currentPhaseId: 'p1', notableObservations: [] },
+    authority: { userConfirmation: 'not_required', reviewerOverride: false, acceptAuthority: 'reviewer_aligned' },
+    actions,
+    messages: [{ target: 'system_log', content: 'log' }],
+  };
+}
 
 /** Create a mock CLIAdapter that returns a JSON code block wrapping the given object. */
 function createMockAdapter(responseJson: Record<string, unknown>): CLIAdapter {
@@ -166,7 +188,7 @@ const sessionDir = () => join(tmpDir, 'session');
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Scenario 1: Normal God workflow path (AC-1)', () => {
-  it('full workflow: TASK_INIT → CODING → ROUTING_POST_CODE → REVIEWING → ROUTING_POST_REVIEW → EVALUATING → DONE', async () => {
+  it('full workflow: TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING → REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → DONE', async () => {
     const actor = startActor();
 
     // ── Step 1: TASK_INIT ──
@@ -190,108 +212,70 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
     expect(actor.getSnapshot().value).toBe('CODING');
     expect(actor.getSnapshot().context.maxRounds).toBe(5);
 
-    // ── Step 2: Coder produces output → ROUTING_POST_CODE ──
+    // ── Step 2: Coder produces output → OBSERVING (not ROUTING_POST_CODE) ──
     actor.send({ type: 'CODE_COMPLETE', output: 'function login() { /* auth logic */ }' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    // God routes to review
-    const postCodeAdapter = createMockAdapter({
-      action: 'continue_to_review',
-      reasoning: 'Coder produced login implementation, needs review.',
-    } satisfies GodPostCoderDecision);
+    // Observations classified, God decides to send to reviewer
+    const obs1 = [makeObs('work_output', 'coder')];
+    actor.send({ type: 'OBSERVATIONS_READY', observations: obs1 });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    const postCodeResult = await routePostCoder(postCodeAdapter, 'function login() {}', {
-      round: 0, maxRounds: 5, taskGoal: 'implement login', sessionDir: sessionDir(), seq: 1,
-    });
-    expect(postCodeResult.event).toEqual({ type: 'ROUTE_TO_REVIEW' });
+    // God decides: send_to_reviewer
+    const envelopeToReview = makeEnvelope([{ type: 'send_to_reviewer', message: 'Review the login implementation' }]);
+    actor.send({ type: 'DECISION_READY', envelope: envelopeToReview });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
 
-    actor.send(postCodeResult.event);
+    // Hand executor completes → routes to REVIEWING
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('REVIEWING');
 
-    // ── Step 3: Reviewer produces output → ROUTING_POST_REVIEW ──
+    // ── Step 3: Reviewer produces output → OBSERVING ──
     actor.send({ type: 'REVIEW_COMPLETE', output: 'Missing input validation. Fix line 5.' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_REVIEW');
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    // God routes back to coder
-    const postReviewAdapter1 = createMockAdapter({
-      action: 'route_to_coder',
-      reasoning: 'Reviewer found issues, coder needs to fix.',
-      unresolvedIssues: ['Missing input validation on line 5'],
-      confidenceScore: 0.6,
-      progressTrend: 'improving',
-    } satisfies GodPostReviewerDecision);
+    // God decides: send back to coder (route_to_coder equivalent)
+    const obs2 = [makeObs('review_output', 'reviewer')];
+    actor.send({ type: 'OBSERVATIONS_READY', observations: obs2 });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    const postReviewResult1 = await routePostReviewer(postReviewAdapter1, 'Missing input validation.', {
-      round: 0, maxRounds: 5, taskGoal: 'implement login', sessionDir: sessionDir(), seq: 2,
-    });
-    expect(postReviewResult1.event).toEqual({ type: 'ROUTE_TO_CODER' });
+    const envelopeToCoder = makeEnvelope([{ type: 'send_to_coder', message: 'Fix input validation on line 5' }]);
+    actor.send({ type: 'DECISION_READY', envelope: envelopeToCoder });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
 
-    actor.send(postReviewResult1.event);
+    // EXECUTION_COMPLETE routes to CODING (round increments)
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('CODING');
     expect(actor.getSnapshot().context.round).toBe(1);
 
-    // ── Step 4: Round 2 — Coder fixes → Reviewer approves → EVALUATING ──
+    // ── Step 4: Round 2 — Coder fixes → Reviewer approves → DONE ──
     actor.send({ type: 'CODE_COMPLETE', output: 'function login() { validateInput(); /* auth */ }' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    const postCodeAdapter2 = createMockAdapter({
-      action: 'continue_to_review',
-      reasoning: 'Fixed code, send for review.',
-    } satisfies GodPostCoderDecision);
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    const postCodeResult2 = await routePostCoder(postCodeAdapter2, 'fixed code', {
-      round: 1, maxRounds: 5, taskGoal: 'implement login', sessionDir: sessionDir(), seq: 3,
-    });
-    actor.send(postCodeResult2.event);
+    const envelopeToReview2 = makeEnvelope([{ type: 'send_to_reviewer', message: 'Review the fix' }]);
+    actor.send({ type: 'DECISION_READY', envelope: envelopeToReview2 });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('REVIEWING');
 
     actor.send({ type: 'REVIEW_COMPLETE', output: 'All issues resolved. [APPROVED]' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_REVIEW');
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    // God says route to evaluate
-    const postReviewAdapter2 = createMockAdapter({
-      action: 'converged',
-      reasoning: 'Reviewer approved, all issues resolved.',
-      confidenceScore: 0.95,
-      progressTrend: 'improving',
-    } satisfies GodPostReviewerDecision);
-
-    const postReviewResult2 = await routePostReviewer(postReviewAdapter2, 'All issues resolved. [APPROVED]', {
-      round: 1, maxRounds: 5, taskGoal: 'implement login', sessionDir: sessionDir(), seq: 4,
-    });
-    // converged from POST_REVIEW goes to GOD_DECIDING via state machine
-    expect(postReviewResult2.event).toEqual({ type: 'CONVERGED' });
-
-    actor.send({ type: 'ROUTE_TO_EVALUATE' });
-    expect(actor.getSnapshot().value).toBe('EVALUATING');
-
-    // ── Step 5: EVALUATING → CONVERGED ──
-    const convergenceLog: ConvergenceLogEntry[] = [];
-    const convergenceAdapter = createMockAdapter({
-      classification: 'approved',
-      shouldTerminate: true,
-      reason: 'approved',
-      blockingIssueCount: 0,
-      criteriaProgress: [
-        { criterion: 'Login form renders', satisfied: true },
-        { criterion: 'Auth works', satisfied: true },
-        { criterion: 'Tests pass', satisfied: true },
-      ],
-      reviewerVerdict: 'All criteria met, code is approved.',
-    } satisfies GodConvergenceJudgment);
-
-    const convergenceResult = await evaluateConvergence(convergenceAdapter, 'All issues resolved. [APPROVED]', {
-      round: 1, maxRounds: 5, taskGoal: 'implement login',
-      terminationCriteria: ['Login form renders', 'Auth works', 'Tests pass'],
-      convergenceLog, sessionDir: sessionDir(), seq: 5,
-    });
-    expect(convergenceResult.shouldTerminate).toBe(true);
-
-    actor.send({ type: 'CONVERGED' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
-    // ── Step 6: GOD_DECIDING → DONE ──
-    actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+    // ── Step 5: God decides to accept → EXECUTING → DONE ──
+    const envelopeAccept = makeEnvelope([
+      { type: 'accept_task', rationale: 'reviewer_aligned', summary: 'All criteria met, code approved.' },
+    ]);
+    actor.send({ type: 'DECISION_READY', envelope: envelopeAccept });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('DONE');
 
     actor.stop();
@@ -308,14 +292,25 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
       round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
     });
 
-    // The event type should be directly sendable to the state machine
+    // The legacy routePostCoder still works as a module, but the state machine
+    // now uses Observe → Decide → Act. Verify the new event flow instead.
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'test' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    actor.send(result.event);
+    // Use new events to drive to REVIEWING
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+
+    const envelope = makeEnvelope([{ type: 'send_to_reviewer', message: 'review it' }]);
+    actor.send({ type: 'DECISION_READY', envelope });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [] });
     expect(actor.getSnapshot().value).toBe('REVIEWING');
+
     actor.stop();
   });
 });
@@ -353,7 +348,7 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
     actor.stop();
   });
 
-  it('ROUTING_POST_CODE God failure → fallback to v1 ChoiceDetector', async () => {
+  it('OBSERVING God failure → fallback to v1 ChoiceDetector via MANUAL_FALLBACK', async () => {
     const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
     const failingAdapter = createFailingAdapter(new Error('God timeout'));
 
@@ -362,13 +357,13 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
       () => routePostCoder(failingAdapter, 'code output', {
         round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
       }),
-      () => ({ event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'v1 fallback' }, rawOutput: '' }),
+      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'v1 fallback' }, rawOutput: '' }),
       'process_exit',
     );
 
     // After retry-fail cycle, should have fallen back
     expect(usedGod).toBe(false);
-    expect(result.event.type).toBe('ROUTE_TO_REVIEW');
+    expect(result.event.type).toBe('OBSERVATIONS_READY');
   });
 
   it('3 consecutive failures → L4 → God disabled for session', async () => {
@@ -381,7 +376,7 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
       () => routePostCoder(failingAdapter, 'output', {
         round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
       }),
-      () => ({ event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
+      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
       'process_exit',
     );
     // After withGodFallback: fail → retry → fail = 2 consecutive failures
@@ -392,7 +387,7 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
       () => routePostCoder(failingAdapter, 'output', {
         round: 1, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 2,
       }),
-      () => ({ event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
+      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
       'process_exit',
     );
 
@@ -407,7 +402,7 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
       () => routePostCoder(goodAdapter, 'output', {
         round: 2, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 3,
       }),
-      () => ({ event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
+      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
       'process_exit',
     );
 
@@ -417,7 +412,6 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
   });
 
   it('full degradation workflow through state machine', async () => {
-    const dm = new DegradationManager({ fallbackServices: createFallbackServices() });
     const actor = startActor();
 
     // Step 1: TASK_INIT fails → skip
@@ -425,23 +419,19 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
     actor.send({ type: 'TASK_INIT_SKIP' });
     expect(actor.getSnapshot().value).toBe('CODING');
 
-    // Step 2: CODING completes normally (adapter execution is separate from God)
+    // Step 2: CODING completes → OBSERVING
     actor.send({ type: 'CODE_COMPLETE', output: 'code output' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    // Step 3: God fails for routing → v1 fallback sends ROUTE_TO_REVIEW
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    expect(actor.getSnapshot().value).toBe('REVIEWING');
-
-    // Step 4: Continue the workflow using v1 path
-    actor.send({ type: 'REVIEW_COMPLETE', output: '[APPROVED]' });
-    actor.send({ type: 'ROUTE_TO_EVALUATE' });
-    expect(actor.getSnapshot().value).toBe('EVALUATING');
-
-    // Step 5: v1 convergence → CONVERGED
-    actor.send({ type: 'CONVERGED' });
+    // Step 3: Observations classified → GOD_DECIDING
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
+    // Step 4: God fails → MANUAL_FALLBACK for user confirmation
+    actor.send({ type: 'MANUAL_FALLBACK_REQUIRED' });
+    expect(actor.getSnapshot().value).toBe('MANUAL_FALLBACK');
+
+    // Step 5: User accepts in MANUAL_FALLBACK → DONE
     actor.send({ type: 'USER_CONFIRM', action: 'accept' });
     expect(actor.getSnapshot().value).toBe('DONE');
 
@@ -454,15 +444,15 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
-  it('God auto-decision: continue_with_instruction → USER_CONFIRM continue', async () => {
+  it('God auto-decision: continue_with_instruction → DECISION_READY → EXECUTING → CODING', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'implement feature' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'needs work' });
-    actor.send({ type: 'ROUTE_TO_EVALUATE' });
-    actor.send({ type: 'CONVERGED' });
+    // CODING → OBSERVING
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
+
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     // God makes auto-decision
@@ -483,23 +473,26 @@ describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
     expect(result.decision.instruction).toBe('Add error handling to the login function');
     expect(result.blocked).toBe(false);
 
-    // Execute the decision via state machine
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
+    // Execute the decision via new event flow: DECISION_READY → EXECUTING → EXECUTION_COMPLETE
+    const envelope = makeEnvelope([{ type: 'send_to_coder', message: 'Add error handling to the login function' }]);
+    actor.send({ type: 'DECISION_READY', envelope });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('CODING');
+    // Round increments when EXECUTION_COMPLETE routes to CODING
     expect(actor.getSnapshot().context.round).toBe(1);
 
     actor.stop();
   });
 
-  it('God auto-decision: accept → USER_CONFIRM accept → DONE', async () => {
+  it('God auto-decision: accept → DECISION_READY → EXECUTING → DONE', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'task' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'approved' });
-    actor.send({ type: 'ROUTE_TO_EVALUATE' });
-    actor.send({ type: 'CONVERGED' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     const godAdapter = createMockAdapter({
       action: 'accept',
@@ -514,7 +507,14 @@ describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
     expect(result.decision.action).toBe('accept');
     expect(result.blocked).toBe(false);
 
-    actor.send({ type: 'USER_CONFIRM', action: 'accept' });
+    // Via new flow: DECISION_READY with accept_task action → EXECUTING → DONE
+    const envelopeAccept = makeEnvelope([
+      { type: 'accept_task', rationale: 'reviewer_aligned', summary: 'Task complete' },
+    ]);
+    actor.send({ type: 'DECISION_READY', envelope: envelopeAccept });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('DONE');
 
     actor.stop();
@@ -525,10 +525,8 @@ describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
     actor.send({ type: 'START_TASK', prompt: 'task' });
     actor.send({ type: 'TASK_INIT_SKIP' });
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'needs discussion' });
-    actor.send({ type: 'ROUTE_TO_EVALUATE' });
-    actor.send({ type: 'CONVERGED' });
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     const godAdapter = createMockAdapter({
       action: 'request_human',
@@ -543,7 +541,7 @@ describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
     expect(result.decision.action).toBe('continue_with_instruction');
     expect(result.reasoning).toContain('Local fallback');
 
-    // State machine remains in GOD_DECIDING until the caller executes the autonomous choice.
+    // State machine remains in GOD_DECIDING until the caller sends DECISION_READY.
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
 
     actor.stop();
@@ -605,7 +603,7 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
     { id: 'review-final', name: 'Final Review', type: 'review', description: 'Final review' },
   ];
 
-  it('TASK_INIT compound → phase transition → new phase CODING', async () => {
+  it('TASK_INIT compound → phase transition via set_phase action → new phase CODING', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'compound task' });
 
@@ -629,10 +627,26 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
 
     // ── Phase 1: explore ──
     actor.send({ type: 'CODE_COMPLETE', output: 'explored codebase' });
-    actor.send({ type: 'ROUTE_TO_REVIEW' });
-    actor.send({ type: 'REVIEW_COMPLETE', output: 'exploration looks complete' });
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
-    // God says phase_transition
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+
+    // God decides: send to reviewer
+    const envelopeToReview = makeEnvelope([{ type: 'send_to_reviewer', message: 'Review exploration' }]);
+    actor.send({ type: 'DECISION_READY', envelope: envelopeToReview });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
+    expect(actor.getSnapshot().value).toBe('REVIEWING');
+
+    actor.send({ type: 'REVIEW_COMPLETE', output: 'exploration looks complete' });
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
+
+    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
+    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
+
+    // God says phase_transition via legacy module (for module integration testing)
     const phaseTransitionAdapter = createMockAdapter({
       action: 'phase_transition',
       reasoning: 'Exploration complete, ready to implement.',
@@ -649,7 +663,7 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
 
     expect(postReviewResult.event.type).toBe('PHASE_TRANSITION');
 
-    // Evaluate phase transition
+    // Evaluate phase transition via legacy module
     const convergenceLog: ConvergenceLogEntry[] = [{
       round: 0,
       timestamp: new Date().toISOString(),
@@ -668,20 +682,19 @@ describe('Scenario 4: Compound phase transition (AC-4)', () => {
     expect(transitionResult.nextPhaseId).toBe('code');
     expect(transitionResult.previousPhaseSummary).toContain('explore');
 
-    // Send to state machine with phase data
-    actor.send({
-      type: 'PHASE_TRANSITION',
-      nextPhaseId: transitionResult.nextPhaseId!,
-      summary: transitionResult.previousPhaseSummary!,
-    });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-    expect(actor.getSnapshot().context.pendingPhaseId).toBe('code');
+    // In Card D.1, phase transitions happen via set_phase action in the envelope.
+    // God produces DECISION_READY with set_phase + send_to_coder actions.
+    const envelopePhaseTransition = makeEnvelope([
+      { type: 'set_phase', phaseId: 'code', summary: 'Exploration complete, transitioning to implementation' },
+      { type: 'send_to_coder', message: 'Begin implementation phase' },
+    ]);
 
-    // User confirms phase transition
-    actor.send({ type: 'USER_CONFIRM', action: 'continue' });
+    actor.send({ type: 'DECISION_READY', envelope: envelopePhaseTransition });
+    expect(actor.getSnapshot().value).toBe('EXECUTING');
+
+    // EXECUTION_COMPLETE routes to CODING (round increments since send_to_coder was in actions)
+    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.pendingPhaseId).toBeNull();
-    expect(actor.getSnapshot().context.taskPrompt).toContain('code');
 
     actor.stop();
   });
@@ -865,14 +878,24 @@ describe('Scenario 5: duo resume (AC-5)', () => {
   });
 
   it('full resume flow: RESUMING → CODING with restored God state', () => {
-    // Step 1: Serialize workflow state
+    // Step 1: Serialize workflow state using new event flow
     const actor1 = startActor({ maxRounds: 5 });
     actor1.send({ type: 'START_TASK', prompt: 'original task' });
     actor1.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    // CODING → OBSERVING → GOD_DECIDING → EXECUTING → REVIEWING
     actor1.send({ type: 'CODE_COMPLETE', output: 'v1' });
-    actor1.send({ type: 'ROUTE_TO_REVIEW' });
+    actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    const envelopeToReview = makeEnvelope([{ type: 'send_to_reviewer', message: 'Review v1' }]);
+    actor1.send({ type: 'DECISION_READY', envelope: envelopeToReview });
+    actor1.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
+    expect(actor1.getSnapshot().value).toBe('REVIEWING');
+
+    // REVIEWING → OBSERVING → GOD_DECIDING → EXECUTING → CODING (round++)
     actor1.send({ type: 'REVIEW_COMPLETE', output: 'fix issues' });
-    actor1.send({ type: 'ROUTE_TO_CODER' });
+    actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
+    const envelopeToCoder = makeEnvelope([{ type: 'send_to_coder', message: 'Fix issues' }]);
+    actor1.send({ type: 'DECISION_READY', envelope: envelopeToCoder });
+    actor1.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor1.getSnapshot().value).toBe('CODING');
     expect(actor1.getSnapshot().context.round).toBe(1);
 
@@ -888,13 +911,21 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     expect(actor2.getSnapshot().context.maxRounds).toBe(5);
     expect(actor2.getSnapshot().context.taskPrompt).toBe('original task');
 
-    // Step 3: Continue workflow from restored state
+    // Step 3: Continue workflow from restored state → DONE
     actor2.send({ type: 'CODE_COMPLETE', output: 'v2' });
-    actor2.send({ type: 'ROUTE_TO_REVIEW' });
+    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
+    const envelopeToReview2 = makeEnvelope([{ type: 'send_to_reviewer', message: 'Review v2' }]);
+    actor2.send({ type: 'DECISION_READY', envelope: envelopeToReview2 });
+    actor2.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
+    expect(actor2.getSnapshot().value).toBe('REVIEWING');
+
     actor2.send({ type: 'REVIEW_COMPLETE', output: '[APPROVED]' });
-    actor2.send({ type: 'ROUTE_TO_EVALUATE' });
-    actor2.send({ type: 'CONVERGED' });
-    actor2.send({ type: 'USER_CONFIRM', action: 'accept' });
+    actor2.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('review_output', 'reviewer')] });
+    const envelopeAccept = makeEnvelope([
+      { type: 'accept_task', rationale: 'reviewer_aligned', summary: 'Approved' },
+    ]);
+    actor2.send({ type: 'DECISION_READY', envelope: envelopeAccept });
+    actor2.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor2.getSnapshot().value).toBe('DONE');
 
     actor2.stop();
@@ -911,7 +942,7 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
     // Can continue normal workflow from here
     actor.send({ type: 'CODE_COMPLETE', output: 'resumed code' });
-    expect(actor.getSnapshot().value).toBe('ROUTING_POST_CODE');
+    expect(actor.getSnapshot().value).toBe('OBSERVING');
 
     actor.stop();
   });
@@ -938,11 +969,12 @@ describe('Cross-cutting: withGodFallback integration', () => {
       () => routePostCoder(adapter, 'output', {
         round: 0, maxRounds: 10, taskGoal: 'test', sessionDir: sessionDir(), seq: 1,
       }),
-      () => ({ event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
+      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
       'process_exit',
     );
 
     expect(usedGod).toBe(true);
+    // routePostCoder still returns legacy event types for backward compat
     expect(result.event.type).toBe('ROUTE_TO_REVIEW');
     expect(dm.getState().consecutiveFailures).toBe(0);
     expect(dm.getState().level).toBe('L1');

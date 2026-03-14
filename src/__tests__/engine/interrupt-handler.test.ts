@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { InterruptHandler, type InterruptHandlerDeps } from '../../engine/interrupt-handler.js';
+import type { Observation } from '../../types/observation.js';
 
 /**
  * Mock ProcessManager — only needs kill(), isRunning(), getBufferedOutput()
@@ -46,6 +47,7 @@ function createDeps(overrides?: Partial<InterruptHandlerDeps>): InterruptHandler
     actor: createMockActor(),
     onExit: vi.fn(),
     onInterrupted: vi.fn(),
+    onObservation: vi.fn(),
     ...overrides,
   };
 }
@@ -70,13 +72,17 @@ describe('InterruptHandler', () => {
       expect(deps.processManager.kill).toHaveBeenCalledOnce();
     });
 
-    it('should send USER_INTERRUPT event to actor', async () => {
+    // Card E.1: adapted — InterruptHandler no longer sends USER_INTERRUPT to actor
+    it('should emit human_interrupt observation (not send to actor)', async () => {
       const deps = createDeps();
       handler = new InterruptHandler(deps);
 
       await handler.handleSigint();
 
-      expect(deps.actor.send).toHaveBeenCalledWith({ type: 'USER_INTERRUPT' });
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'human_interrupt', source: 'human' }),
+      );
+      expect(deps.actor.send).not.toHaveBeenCalled();
     });
 
     it('should call onInterrupted callback with buffered output', async () => {
@@ -104,14 +110,15 @@ describe('InterruptHandler', () => {
       expect(pm.kill).not.toHaveBeenCalled();
     });
 
-    it('should not send USER_INTERRUPT if actor is not in active state', async () => {
+    // Card E.1: adapted — no observation emitted if not in active state
+    it('should not emit observation if actor is not in active state', async () => {
       const actor = createMockActor('IDLE');
       const deps = createDeps({ actor });
       handler = new InterruptHandler(deps);
 
       await handler.handleSigint();
 
-      expect(actor.send).not.toHaveBeenCalled();
+      expect(deps.onObservation).not.toHaveBeenCalled();
     });
   });
 
@@ -149,22 +156,26 @@ describe('InterruptHandler', () => {
   // ──────────────────────────────────────────────
   // AC-3: User input after interrupt becomes new context
   // ──────────────────────────────────────────────
-  describe('AC-3: user input after interrupt as context', () => {
-    it('should send USER_INPUT event with user instruction', async () => {
+  // Card E.1: adapted — handleUserInput now emits clarification_answer observation
+  describe('AC-3: user input after interrupt as observation', () => {
+    it('should emit clarification_answer observation with user instruction', async () => {
       const deps = createDeps();
       handler = new InterruptHandler(deps);
 
       // First, interrupt
       await handler.handleSigint();
 
-      // Then user types input
+      // Then user types input — emits observation, not USER_INPUT event
       handler.handleUserInput('fix the bug instead', 'coder');
 
-      expect(deps.actor.send).toHaveBeenCalledWith({
-        type: 'USER_INPUT',
-        input: 'fix the bug instead',
-        resumeAs: 'coder',
-      });
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'clarification_answer',
+          source: 'human',
+          summary: 'fix the bug instead',
+        }),
+      );
+      expect(deps.actor.send).not.toHaveBeenCalled();
     });
   });
 
@@ -172,7 +183,8 @@ describe('InterruptHandler', () => {
   // AC-4: Text interrupt — typing during LLM run = interrupt with instruction
   // ──────────────────────────────────────────────
   describe('AC-4: text interrupt', () => {
-    it('should kill process and send USER_INTERRUPT then USER_INPUT', async () => {
+    // Card E.1: adapted — text interrupt emits observation, not USER_INTERRUPT
+    it('should kill process and emit human_message observation', async () => {
       const deps = createDeps();
       handler = new InterruptHandler(deps);
 
@@ -180,8 +192,11 @@ describe('InterruptHandler', () => {
 
       // Should kill process
       expect(deps.processManager.kill).toHaveBeenCalledOnce();
-      // Should send USER_INTERRUPT to transition to INTERRUPTED state
-      expect(deps.actor.send).toHaveBeenCalledWith({ type: 'USER_INTERRUPT' });
+      // Should emit observation, NOT send USER_INTERRUPT
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'human_message', source: 'human' }),
+      );
+      expect(deps.actor.send).not.toHaveBeenCalled();
       // Should notify about interruption
       expect(deps.onInterrupted).toHaveBeenCalled();
     });
@@ -208,7 +223,7 @@ describe('InterruptHandler', () => {
       await handler.handleTextInterrupt('hello', 'coder');
 
       expect(pm.kill).not.toHaveBeenCalled();
-      expect(deps.actor.send).not.toHaveBeenCalled();
+      expect(deps.onObservation).not.toHaveBeenCalled();
     });
   });
 
@@ -286,6 +301,86 @@ describe('InterruptHandler', () => {
   });
 
   // ──────────────────────────────────────────────
+  // Card B.2 AC-3: Ctrl+C produces human_interrupt observation
+  // ──────────────────────────────────────────────
+  describe('B.2 AC-3: Ctrl+C produces human_interrupt observation', () => {
+    it('should call onObservation with human_interrupt on handleSigint', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleSigint();
+
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'human_interrupt',
+          source: 'human',
+          severity: 'warning',
+        }),
+      );
+    });
+
+    it('should include round from actor snapshot in observation', async () => {
+      const actor = createMockActor('CODING');
+      actor.getSnapshot.mockReturnValue({
+        value: 'CODING',
+        context: { sessionId: 'test', round: 5, activeProcess: 'coder' },
+      });
+      const deps = createDeps({ actor });
+      handler = new InterruptHandler(deps);
+
+      await handler.handleSigint();
+
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'human_interrupt',
+          round: 5,
+        }),
+      );
+    });
+
+    it('should NOT call onObservation if not in active state', async () => {
+      const actor = createMockActor('IDLE');
+      const deps = createDeps({ actor });
+      handler = new InterruptHandler(deps);
+
+      await handler.handleSigint();
+
+      expect(deps.onObservation).not.toHaveBeenCalled();
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Card B.2: Text interrupt produces human_message observation
+  // ──────────────────────────────────────────────
+  describe('B.2: text interrupt produces human_message observation', () => {
+    it('should call onObservation with human_message on handleTextInterrupt', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleTextInterrupt('fix the bug', 'coder');
+
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'human_message',
+          source: 'human',
+          severity: 'info',
+          summary: 'fix the bug',
+        }),
+      );
+    });
+
+    it('should carry rawRef with the user text', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleTextInterrupt('use different approach', 'coder');
+
+      const obs = (deps.onObservation as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Observation;
+      expect(obs.rawRef).toBe('use different approach');
+    });
+  });
+
+  // ──────────────────────────────────────────────
   // Edge cases
   // ──────────────────────────────────────────────
   describe('edge cases', () => {
@@ -297,8 +392,10 @@ describe('InterruptHandler', () => {
 
       // Should not throw
       await expect(handler.handleSigint()).resolves.not.toThrow();
-      // Should still send USER_INTERRUPT
-      expect(deps.actor.send).toHaveBeenCalledWith({ type: 'USER_INTERRUPT' });
+      // Should still emit observation (not send to actor)
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'human_interrupt' }),
+      );
     });
 
     it('dispose should clean up', () => {
@@ -307,6 +404,121 @@ describe('InterruptHandler', () => {
       handler.dispose();
       // No error on second dispose
       handler.dispose();
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Card E.1: Interrupt → Observation normalization
+  // ──────────────────────────────────────────────
+  describe('E.1 AC-5: no direct state machine operation on interrupt', () => {
+    it('handleSigint should NOT send any event to the state machine', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleSigint();
+
+      // E.1: InterruptHandler must not call actor.send — observations route through pipeline
+      expect(deps.actor.send).not.toHaveBeenCalled();
+    });
+
+    it('handleTextInterrupt should NOT send any event to the state machine', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleTextInterrupt('fix the bug', 'coder');
+
+      // E.1: InterruptHandler must not call actor.send
+      expect(deps.actor.send).not.toHaveBeenCalled();
+    });
+
+    it('handleSigint should still call onObservation with human_interrupt', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleSigint();
+
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'human_interrupt',
+          source: 'human',
+          severity: 'warning',
+        }),
+      );
+    });
+
+    it('handleTextInterrupt should still call onObservation with human_message', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleTextInterrupt('use different approach', 'coder');
+
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'human_message',
+          source: 'human',
+          severity: 'info',
+          summary: 'use different approach',
+        }),
+      );
+    });
+  });
+
+  describe('E.1 AC-3: handleUserInput emits clarification_answer observation', () => {
+    it('should emit clarification_answer observation via onObservation', () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      handler.handleUserInput('fix the bug instead', 'coder');
+
+      expect(deps.onObservation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'clarification_answer',
+          source: 'human',
+          summary: 'fix the bug instead',
+          severity: 'info',
+        }),
+      );
+    });
+
+    it('should include rawRef with user text', () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      handler.handleUserInput('change the approach', 'coder');
+
+      const obs = (deps.onObservation as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Observation;
+      expect(obs.rawRef).toBe('change the approach');
+    });
+
+    it('should NOT send USER_INPUT event to the state machine', () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      handler.handleUserInput('test input', 'coder');
+
+      expect(deps.actor.send).not.toHaveBeenCalled();
+    });
+
+    it('should not emit if disposed', () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+      handler.dispose();
+
+      handler.handleUserInput('test', 'coder');
+
+      expect(deps.onObservation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('E.1 AC-4: double Ctrl+C still bypasses God', () => {
+    it('should exit on double Ctrl+C without going through observation pipeline', async () => {
+      const deps = createDeps();
+      handler = new InterruptHandler(deps);
+
+      await handler.handleSigint();
+      await handler.handleSigint(); // within 500ms
+
+      expect(deps.onExit).toHaveBeenCalled();
     });
   });
 });

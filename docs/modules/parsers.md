@@ -4,20 +4,23 @@
 
 解析器模块负责将不同 CLI 工具产生的原始输出流解析为统一的 `OutputChunk` 格式。由于各 AI CLI 工具的输出协议各异（NDJSON 事件流、JSONL 行、纯文本），解析器层屏蔽了这些差异，为上层提供一致的 `AsyncIterable<OutputChunk>` 接口。
 
+此外，模块还提供 `GodJsonExtractor`——一个非流式的 JSON 提取工具，用于从 God LLM 的文本输出中提取结构化 JSON 并进行 Zod schema 校验。
+
 ---
 
 ## 文件清单
 
 | 文件 | 职责 |
 |------|------|
-| `src/parsers/index.ts` | 统一导出三类解析器 |
+| `src/parsers/index.ts` | 统一导出四类解析器 |
 | `src/parsers/stream-json-parser.ts` | 解析 NDJSON stream-json 格式 |
 | `src/parsers/jsonl-parser.ts` | 解析 JSONL / --json 格式 |
 | `src/parsers/text-stream-parser.ts` | 解析纯文本流 |
+| `src/parsers/god-json-extractor.ts` | 从 God LLM 输出中提取 JSON 并校验 schema |
 
 ---
 
-## 三类解析器
+## 四类解析器
 
 ### 1. StreamJsonParser (`stream-json-parser.ts`)
 
@@ -179,9 +182,87 @@ const ERROR_PATTERNS = [
 
 ---
 
+### 4. GodJsonExtractor (`god-json-extractor.ts`)
+
+**用途**：从 God LLM（编排层 LLM）的文本输出中提取结构化 JSON 数据
+
+**概述**：与前三类流式解析器不同，GodJsonExtractor 是一个非流式工具函数集。God LLM 的输出通常是自然语言文本中嵌入一个 `` ```json ... ``` `` 代码块，GodJsonExtractor 负责提取最后一个 JSON 代码块并通过 Zod schema 校验其结构正确性。
+
+#### 核心函数
+
+##### extractGodJson
+
+```typescript
+function extractGodJson<T>(
+  output: string,
+  schema: z.ZodSchema<T>,
+): ExtractResult<T> | null
+```
+
+从完整的 CLI 文本输出中提取最后一个 `` ```json ... ``` `` 代码块，解析 JSON 并通过 Zod schema 校验。
+
+**返回值语义**：
+- `null` — 未找到 JSON 代码块（纯文本输出，非错误）
+- `{ success: true, data: T }` — 提取并校验成功
+- `{ success: false, error: string }` — JSON 解析失败或 schema 校验失败，error 包含具体原因
+
+**提取策略**：使用正则 `` /```json\s*\n([\s\S]*?)```/g `` 全局匹配，取最后一个匹配结果。选择"最后一个"是因为 God LLM 可能在推理过程中输出多个 JSON 块，最终结果通常在最后。
+
+##### extractWithRetry
+
+```typescript
+async function extractWithRetry<T>(
+  output: string,
+  schema: z.ZodSchema<T>,
+  retryFn: (errorHint: string) => Promise<string>,
+): Promise<ExtractResult<T> | null>
+```
+
+带重试的提取函数。当首次提取失败（JSON 解析错误或 schema 校验失败）时，将错误信息作为 hint 传递给 `retryFn`（通常是重新调用 God LLM 让其修正输出），然后对重试输出再做一次提取。
+
+**重试策略**：
+- 纯文本输出（无 JSON 块）→ **不重试**，直接返回 `null`
+- 首次提取成功 → 返回结果（附带 `sourceOutput` 字段记录原始输出）
+- 首次提取失败 → 调用 `retryFn(error)` 获取新输出 → 再次提取
+- 重试仍失败 → 返回 `null`
+
+最多重试 1 次，避免无限循环。
+
+#### ExtractResult 类型
+
+```typescript
+type ExtractResult<T> =
+  | { success: true; data: T; sourceOutput?: string }
+  | { success: false; error: string };
+```
+
+`sourceOutput` 仅在 `extractWithRetry` 成功时填充，记录产生最终数据的原始 CLI 输出文本。
+
+#### Zod 校验错误格式化
+
+内部 `formatZodError()` 将 Zod 的 `ZodError` 转换为可读字符串，格式为：
+
+```
+Schema validation failed: field.path: error message; another.path: error message
+```
+
+路径为空时显示 `(root)`。这个格式化后的字符串可以直接作为 `retryFn` 的 hint 传递给 God LLM，帮助其理解哪些字段不符合预期。
+
+#### 与流式解析器的对比
+
+| 特性 | StreamJsonParser / JsonlParser / TextStreamParser | GodJsonExtractor |
+|------|--------------------------------------------------|------------------|
+| 输入 | `ReadableStream<string>`（流式） | `string`（完整文本） |
+| 输出 | `AsyncIterable<OutputChunk>` | `ExtractResult<T> \| null` |
+| 用途 | 解析 CLI 工具的实时输出流 | 从 God LLM 输出中提取结构化决策 |
+| Schema 校验 | 无（基于事件类型映射） | Zod schema 严格校验 |
+| 重试机制 | 无（跳过 malformed line 继续） | 支持 1 次自动重试 |
+
+---
+
 ## Malformed Line 处理机制
 
-StreamJsonParser 和 JsonlParser 共享相同的 malformed line 处理策略（P0-6 修复）：
+StreamJsonParser 和 JsonlParser 共享相同的 malformed line 处理策略：
 
 ### 处理流程
 
@@ -220,17 +301,19 @@ JsonlParser 格式相同，前缀为 `[JsonlParser]`。
 | `stream-json` | `StreamJsonParser` | Claude Code, Gemini CLI, Amp, Qwen |
 | `jsonl` | `JsonlParser` | Codex, GitHub Copilot, Cursor, Cline, Continue |
 | `text` | `TextStreamParser` | Aider, Amazon Q, Goose |
+| _(非流式)_ | `GodJsonExtractor` | God LLM 编排层输出 |
 
 选择依据：
 - **stream-json**：工具原生支持 `--output-format stream-json`，输出丰富的结构化事件（assistant/user/tool_use/result 等）
 - **jsonl**：工具支持 `--json` 或类似标志，输出每行一个 JSON 对象，但事件类型体系与 stream-json 不同
 - **text**：工具仅输出纯文本（无结构化 JSON 选项），需通过正则提取代码块和错误
+- **GodJsonExtractor**：非流式使用场景，从 God LLM 的完整输出中提取 JSON 决策并进行 schema 校验
 
 ---
 
 ## 统一输出接口
 
-三类解析器的 `parse()` 方法签名完全一致：
+三类流式解析器的 `parse()` 方法签名完全一致：
 
 ```typescript
 async *parse(stream: ReadableStream<string>): AsyncIterable<OutputChunk>
@@ -257,3 +340,21 @@ async *parse(stream: ReadableStream<string>): AsyncIterable<OutputChunk>
 | `status` | 状态信息（会话事件、rate limit、malformed 汇总等） |
 
 上层模块（如 `OutputStreamManager`）消费 `AsyncIterable<OutputChunk>` 即可，无需关心底层 CLI 的输出协议差异。
+
+GodJsonExtractor 则使用独立的 `ExtractResult<T>` 类型，通过 Zod schema 泛型参数 `T` 提供类型安全的结构化输出。
+
+---
+
+## 导出清单
+
+`src/parsers/index.ts` 统一导出：
+
+```typescript
+export { StreamJsonParser } from './stream-json-parser.js';
+export { JsonlParser } from './jsonl-parser.js';
+export { TextStreamParser } from './text-stream-parser.js';
+export { extractGodJson, extractWithRetry } from './god-json-extractor.js';
+export type { ExtractResult } from './god-json-extractor.js';
+```
+
+GodJsonExtractor 导出的是函数（`extractGodJson`、`extractWithRetry`）和类型（`ExtractResult`），而非 class 实例，因为它是无状态的纯函数工具。

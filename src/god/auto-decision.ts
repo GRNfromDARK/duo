@@ -8,6 +8,7 @@
  *
  * Decisions are checked against rule engine before execution (AC-025).
  * Reasoning is written to audit log (AC-027).
+ * AI-REVIEW: God 自主决策需经 rule engine 校验后才执行，确保 NFR-001 状态变化必须 action-backed。
  */
 
 import type { GodAdapter } from '../types/god-adapter.js';
@@ -202,6 +203,12 @@ export async function makeAutoDecision(
     systemPrompt: SYSTEM_PROMPT,
     projectDir: context.projectDir,
     timeoutMs: GOD_TIMEOUT_MS,
+    logging: {
+      sessionDir: context.sessionDir,
+      round: context.round,
+      kind: 'god_auto_decision',
+      meta: { attempt: 1, waitingReason: context.waitingReason },
+    },
   });
 
   const extracted = await extractWithRetry(rawOutput, GodAutoDecisionSchema, async (hint) =>
@@ -211,6 +218,12 @@ export async function makeAutoDecision(
       systemPrompt: SYSTEM_PROMPT,
       projectDir: context.projectDir,
       timeoutMs: GOD_TIMEOUT_MS,
+      logging: {
+        sessionDir: context.sessionDir,
+        round: context.round,
+        kind: 'god_auto_decision',
+        meta: { attempt: 2, waitingReason: context.waitingReason, retryReason: 'schema_validation' },
+      },
     }),
   );
 
