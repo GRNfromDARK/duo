@@ -16,6 +16,7 @@ import type { Observation } from '../../types/observation.js';
 import {
   GodDecisionService,
   type GodDecisionContext,
+  REVIEWER_HANDLING_INSTRUCTIONS,
 } from '../../god/god-decision-service.js';
 import { DegradationManager } from '../../god/degradation-manager.js';
 
@@ -530,6 +531,16 @@ describe('GodDecisionService', () => {
       // Success should reset
       expect(degradation.getState().consecutiveFailures).toBe(0);
       expect(degradation.getState().level).toBe('L1');
+    });
+  });
+
+  // ── REVIEWER_HANDLING_INSTRUCTIONS content (Change 3) ──
+
+  describe('REVIEWER_HANDLING_INSTRUCTIONS auto-forwarding guidance', () => {
+    it('REVIEWER_HANDLING_INSTRUCTIONS includes auto-forwarding guidance', () => {
+      expect(REVIEWER_HANDLING_INSTRUCTIONS).toContain('auto-forwarding');
+      expect(REVIEWER_HANDLING_INSTRUCTIONS).toContain('ROUTING GUIDANCE');
+      expect(REVIEWER_HANDLING_INSTRUCTIONS).toContain('Do NOT repeat or summarize');
     });
   });
 });

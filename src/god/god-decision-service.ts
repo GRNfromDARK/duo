@@ -270,7 +270,15 @@ export const REVIEWER_HANDLING_INSTRUCTIONS = `Reviewer conclusion handling:
 - If you agree with the reviewer: set authority.acceptAuthority = "reviewer_aligned"
 - If you override the reviewer: set authority.reviewerOverride = true AND include a system_log message explaining why
 - The reviewer's verdict is informational — you make the final decision
-- Never ignore a reviewer observation — always acknowledge it in your diagnosis`;
+- Never ignore a reviewer observation — always acknowledge it in your diagnosis
+
+Reviewer feedback auto-forwarding:
+- When you route post-reviewer work back to Coder (send_to_coder), the Reviewer's FULL original analysis is automatically injected into the Coder's prompt by the platform
+- Therefore, your send_to_coder.message should focus on ROUTING GUIDANCE: what to prioritize, what approach to take, which issues are most critical
+- Do NOT repeat or summarize the Reviewer's analysis in your message — the Coder already has the complete original text
+- Your message adds value by providing strategic direction that the Reviewer's analysis alone does not convey
+- Example good message: "Focus on the scroll event propagation issue identified by the Reviewer. The CSS overflow approach is preferred over JS event listeners."
+- Example bad message: "The Reviewer found that Ink uses readable + stdin.read() which captures mouse events. Please fix the scroll..."  (redundant — Coder already sees the full Reviewer text)`;
 
 // Phase-following instructions for compound tasks (Bug 11 fix)
 export const PHASE_FOLLOWING_INSTRUCTIONS = `Phase plan compliance:
