@@ -43,12 +43,12 @@ import * as path from 'node:path';
 import { initializeTask } from '../../god/task-init.js';
 import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
 import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
+import type { GodRetryController } from '../god-fallback.js';
 import type { GodTaskAnalysis, GodAutoDecision } from '../../types/god-schemas.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
-import { generateCoderPrompt, generateReviewerPrompt } from '../../god/god-prompt-generator.js';
+import { generateCoderPrompt, generateReviewerPrompt, extractBlockingIssues } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import { GodDecisionBanner } from './GodDecisionBanner.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
@@ -67,10 +67,11 @@ import {
   createTimeoutObservation,
 } from '../../god/observation-integration.js';
 import { ProcessTimeoutError } from '../../adapters/process-manager.js';
-import { classifyOutput, createObservation } from '../../god/observation-classifier.js';
+import { classifyOutput, createObservation, deduplicateObservations } from '../../god/observation-classifier.js';
 import { formatGodMessage } from '../god-message-style.js';
 import { dispatchMessages, checkNLInvariantViolations } from '../../god/message-dispatcher.js';
 import { GodDecisionService, type GodDecisionContext } from '../../god/god-decision-service.js';
+import { WatchdogService } from '../../god/watchdog.js';
 import { executeActions, type HandExecutionContext } from '../../god/hand-executor.js';
 
 // ── Adapter session helpers (duck-typed to avoid modifying CLIAdapter interface) ──
@@ -309,16 +310,25 @@ function SessionRunner({
   );
   const outputManagerRef = useRef(new OutputStreamManager());
   const godAuditLoggerRef = useRef<GodAuditLogger | null>(null);
-  const degradationManagerRef = useRef(
-    new DegradationManager({
-      fallbackServices: {
-        contextManager: contextManagerRef.current,
-        convergenceService: convergenceRef.current,
-        choiceDetector: choiceDetectorRef.current,
-      },
-      restoredState: resumeSession?.state.degradationState,
-    }),
-  );
+  // GodRetryController wraps WatchdogService for withGodFallback.
+  // On failure, asks Watchdog AI to diagnose and decide retry/fallback.
+  const godRetryControllerRef = useRef<GodRetryController>({
+    isGodAvailable: () => watchdogRef.current.isGodAvailable(),
+    handleGodSuccess: () => watchdogRef.current.handleGodSuccess(),
+    handleGodFailure: async (error) => {
+      const decision = await watchdogRef.current.diagnose(
+        error, null, [],
+        { taskGoal: config.task, round: 0, maxRounds: 1 },
+      );
+      const shouldRetry = decision.decision === 'retry_fresh' || decision.decision === 'retry_with_hint';
+      return {
+        retry: shouldRetry,
+        notification: shouldRetry
+          ? { type: 'retrying' as const, message: `◈ Watchdog: ${decision.analysis}` }
+          : { type: 'god_disabled' as const, message: `⚠ Watchdog: ${decision.analysis}` },
+      };
+    },
+  });
 
   // ── Mutable orchestration state ──
   const roundsRef = useRef<RoundRecord[]>(restoredRuntime?.rounds ?? []);
@@ -340,9 +350,19 @@ function SessionRunner({
   const auditSeqRef = useRef(0);
   // Card D.1: track which worker role just completed (for OBSERVING classification)
   const lastWorkerRoleRef = useRef<'coder' | 'reviewer'>('coder');
-  // Card D.1: unified God decision service instance
+  /** Tracks whether Reviewer feedback has been consumed by Coder (Change 5) */
+  const reviewerFeedbackPendingRef = useRef<boolean>(false);
+  // Watchdog: separate adapter instance (no shared session state with God)
+  const watchdogAdapterRef = useRef<GodAdapter>(createGodAdapter(config.god));
+  const watchdogRef = useRef(
+    new WatchdogService(watchdogAdapterRef.current, {
+      model: config.godModel,
+      restoredState: resumeSession?.state.degradationState,
+    }),
+  );
+  // Card D.1: unified God decision service instance (uses Watchdog for error recovery)
   const godDecisionServiceRef = useRef(
-    new GodDecisionService(godAdapterRef.current, degradationManagerRef.current, config.godModel),
+    new GodDecisionService(godAdapterRef.current, watchdogRef.current, config.godModel),
   );
 
   // ── God task analysis state ──
@@ -459,9 +479,13 @@ function SessionRunner({
           ra.restoreSessionId(restoredRuntime.reviewerSessionId);
         }
       }
-      // NOTE: God session ID is intentionally NOT restored on resume.
-      // God is a stateless JSON oracle — resuming would skip --system-prompt
-      // and inject irrelevant conversation context, causing JSON extraction failures.
+      // Restore God session ID for session-capable adapters (kill-and-resume pattern)
+      if (restoredRuntime.godSessionId) {
+        const ga = godAdapterRef.current;
+        if (isSessionCapable(ga)) {
+          ga.restoreSessionId(restoredRuntime.godSessionId);
+        }
+      }
 
       // Initialize God audit logger on resume so seq continues from last entry
       if (!godAuditLoggerRef.current && sessionIdRef.current) {
@@ -512,7 +536,7 @@ function SessionRunner({
 
     // God disabled → skip immediately (withGodFallback handles this but we want
     // the specific "disabled" message before the async IIFE)
-    if (!degradationManagerRef.current.isGodAvailable()) {
+    if (!watchdogRef.current.isGodAvailable()) {
       addMessage({
         role: 'system',
         content: 'God orchestrator disabled. Skipping task analysis.',
@@ -533,7 +557,7 @@ function SessionRunner({
       const startTime = Date.now();
 
       const { result, usedGod, notification } = await withGodFallback(
-        degradationManagerRef.current,
+        godRetryControllerRef.current,
         async () => {
           const systemPrompt = buildGodSystemPrompt({
             task: config.task,
@@ -555,8 +579,13 @@ function SessionRunner({
           return r;
         },
         () => null, // v1 fallback: no task analysis
-        'process_exit',
       );
+
+      // TASK_INIT uses buildGodSystemPrompt (5 decision points format).
+      // Unified decisions use SYSTEM_PROMPT (GodDecisionEnvelope format).
+      // Clear the session so the first unified decision starts fresh
+      // with its own system prompt instead of resuming TASK_INIT's session.
+      godAdapterRef.current.clearSession?.();
 
       if (cancelled) return;
 
@@ -593,9 +622,9 @@ function SessionRunner({
             round: 0,
             decisionType: 'TASK_INIT_FAILURE',
             inputSummary: config.task.slice(0, 500),
-            outputSummary: `Degraded to v1: level=${degradationManagerRef.current.getState().level}`,
+            outputSummary: `Degraded to v1: watchdog failures=${watchdogRef.current.getState().consecutiveFailures}`,
             latencyMs: Date.now() - startTime,
-            decision: { degradationLevel: degradationManagerRef.current.getState().level },
+            decision: { godDisabled: watchdogRef.current.getState().godDisabled },
           });
         }
 
@@ -625,9 +654,12 @@ function SessionRunner({
         ...(isSessionCapable(reviewerAdapter) && reviewerAdapter.getLastSessionId()
           ? { reviewerSessionId: reviewerAdapter.getLastSessionId()! }
           : {}),
+        ...(isSessionCapable(godAdapterRef.current) && godAdapterRef.current.getLastSessionId()
+          ? { godSessionId: godAdapterRef.current.getLastSessionId()! }
+          : {}),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: degradationManagerRef.current.serializeState(),
+        degradationState: watchdogRef.current.serializeState(),
         currentPhaseId,
         // Card E.2: persist clarification context for duo resume
         ...(stateValue === 'CLARIFYING' ? {
@@ -680,7 +712,7 @@ function SessionRunner({
           promptSource = 'choice_route';
         } else {
           const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
-            degradationManagerRef.current,
+            watchdogRef.current,
             () => {
               if (!taskAnalysis) throw new Error('No taskAnalysis available');
               return generateCoderPrompt({
@@ -696,6 +728,8 @@ function SessionRunner({
                 phaseType: currentPhaseId
                   ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
                   : undefined,
+                isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
+                  || reviewerFeedbackPendingRef.current,
               }, {
                 sessionDir: sessionIdRef.current
                   ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
@@ -821,6 +855,7 @@ function SessionRunner({
 
             if (isWork) {
               lastWorkerRoleRef.current = 'coder';
+              reviewerFeedbackPendingRef.current = false;
               addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
               send({ type: 'CODE_COMPLETE', output: outcome.fullText });
             } else {
@@ -959,7 +994,7 @@ function SessionRunner({
           promptSource = 'choice_route';
         } else {
           const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
-            degradationManagerRef.current,
+            watchdogRef.current,
             () => {
               if (!taskAnalysis) throw new Error('No taskAnalysis available');
               return generateReviewerPrompt({
@@ -1094,6 +1129,7 @@ function SessionRunner({
 
             if (isWork) {
               lastWorkerRoleRef.current = 'reviewer';
+              reviewerFeedbackPendingRef.current = true;
               addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
               send({ type: 'REVIEW_COMPLETE', output: outcome.fullText });
             } else {
@@ -1170,7 +1206,7 @@ function SessionRunner({
 
     const manualWaitingMsg = 'Waiting for your decision. Type [c] to continue, [a] to accept, or enter new instructions.';
 
-    if (!degradationManagerRef.current.isGodAvailable()) {
+    if (!watchdogRef.current.isGodAvailable()) {
       send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
       addMessage({
         role: 'system',
@@ -1183,7 +1219,7 @@ function SessionRunner({
     let cancelled = false;
 
     // Bug 4 fix: GOD_DECIDING timeout — fallback to MANUAL_FALLBACK if God hangs
-    const GOD_DECIDING_TIMEOUT_MS = 120_000; // 2 minutes
+    const GOD_DECIDING_TIMEOUT_MS = 610_000; // ~10 minutes, must exceed adapter GOD_TIMEOUT_MS (600s)
     const timeoutId = setTimeout(() => {
       if (cancelled) return;
       cancelled = true;
@@ -1192,8 +1228,11 @@ function SessionRunner({
         content: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s. ${manualWaitingMsg}`,
         timestamp: Date.now(),
       });
-      degradationManagerRef.current.handleGodFailure(
+      // Record timeout in Watchdog state (fire-and-forget since we're in a sync setTimeout callback)
+      void watchdogRef.current.diagnose(
         { kind: 'timeout', message: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s` },
+        null, [],
+        { taskGoal: config.task, round: 0, maxRounds: 1 },
       );
       send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
     }, GOD_DECIDING_TIMEOUT_MS);
@@ -1221,7 +1260,17 @@ function SessionRunner({
           sessionDir: getSessionDir(),
         };
 
-        const envelope = await service.makeDecision(ctx.currentObservations, decisionContext);
+        // Determine if God adapter has an active session (resume mode → slim prompt)
+        const godIsResuming = isSessionCapable(godAdapterRef.current)
+          && godAdapterRef.current.hasActiveSession();
+
+        // Merge clarification history with current observations, deduplicating
+        // since clarificationObservations already includes current-round observations
+        const allObservations = deduplicateObservations([
+          ...ctx.clarificationObservations,
+          ...ctx.currentObservations,
+        ]);
+        const envelope = await service.makeDecision(allObservations, decisionContext, godIsResuming);
 
         if (cancelled) return;
         clearTimeout(timeoutId);
@@ -1347,6 +1396,11 @@ function SessionRunner({
 
         if (cancelled) return;
 
+        // Change 2: populate unresolvedIssues from reviewer output when post-reviewer routing
+        if (lastWorkerRoleRef.current === 'reviewer' && ctx.lastReviewerOutput) {
+          lastUnresolvedIssuesRef.current = extractBlockingIssues(ctx.lastReviewerOutput);
+        }
+
         // Apply side effects from hand executor back to orchestration state
         if (handContext.pendingCoderMessage && handContext.pendingCoderMessage !== pendingInstructionRef.current) {
           pendingInstructionRef.current = handContext.pendingCoderMessage;
@@ -1364,11 +1418,13 @@ function SessionRunner({
           setCurrentPhaseId(handContext.currentPhaseId);
           // Bug 3 fix: clear unresolvedIssues on phase transition
           lastUnresolvedIssuesRef.current = [];
+          reviewerFeedbackPendingRef.current = false;
         }
 
         // Bug 3 fix: clear unresolvedIssues on accept_task or convergence
         if (handContext.taskCompleted || envelope.actions.some(a => a.type === 'accept_task')) {
           lastUnresolvedIssuesRef.current = [];
+          reviewerFeedbackPendingRef.current = false;
           if (envelope.actions.some(a => a.type === 'accept_task')) {
             addMessage({
               role: 'system',
@@ -1514,7 +1570,7 @@ function SessionRunner({
           projectDir: config.projectDir,
         };
 
-        if (degradationManagerRef.current.isGodAvailable()) {
+        if (watchdogRef.current.isGodAvailable()) {
           setIsClassifyingIntent(true);
           void (async () => {
             try {
@@ -1622,9 +1678,15 @@ function SessionRunner({
         ...(isSessionCapable(ra) && ra.getLastSessionId()
           ? { reviewerSessionId: ra.getLastSessionId()! }
           : {}),
+        ...(() => {
+          const ga = godAdapterRef.current;
+          return isSessionCapable(ga) && ga.getLastSessionId()
+            ? { godSessionId: ga.getLastSessionId()! }
+            : {};
+        })(),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: degradationManagerRef.current.serializeState(),
+        degradationState: watchdogRef.current.serializeState(),
         currentPhaseId,
       });
     } catch {
@@ -1639,6 +1701,7 @@ function SessionRunner({
         coderAdapterRef.current,
         reviewerAdapterRef.current,
         godAdapterRef.current,
+        watchdogAdapterRef.current,
       ],
       beforeExit: saveStateForExit,
       onExit: () => exit(),
@@ -1958,7 +2021,7 @@ function SessionRunner({
         reviewerAdapter: config.reviewer,
         coderModel: config.coderModel,
         reviewerModel: config.reviewerModel,
-        degradationLevel: degradationManagerRef.current.getState().level,
+        degradationLevel: watchdogRef.current.serializeState().level,
         godLatency,
       }}
       contextData={contextData}
