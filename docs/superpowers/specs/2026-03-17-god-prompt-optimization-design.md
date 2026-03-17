@@ -300,6 +300,199 @@ return generateCoderPrompt({
 | Post-coder → Coder (God 要求补充) | `'coder'` | `false` | 不显示 |
 | 首轮 Coder (无 Reviewer 输出) | `'coder'` | `false` | 不显示（`lastReviewerOutput` 也为空） |
 | Choice route (用户中断) | N/A | `false` | 不显示（走 `choiceRouteRef` 分支） |
+| Coder adapter_unavailable 后重试 | `'coder'` | `true`（见 Change 5） | 显示（`reviewerFeedbackPending` 保护） |
+
+### Change 5 (P0): adapter_unavailable 恢复时保留 Reviewer 反馈上下文
+
+**实际案例 (session 8c6ee736)**：Round 2 Reviewer 给出了详细的 CHANGES_REQUESTED（3 个 blocking issues + 代码行引用 + `createRequire` 技术方案），Round 3 Coder 因 `adapter_unavailable` 失败。God 在 Round 4 的恢复指令是"重新从头探索"，丢弃了全部 Reviewer 约束。30+ 分钟协作成果归零。
+
+**根因分析**：
+
+当 Coder 因 `adapter_unavailable` 失败时（`observation-classifier.ts:71`），流程为：
+1. Reviewer 完成 → `lastWorkerRoleRef.current = 'reviewer'`（App.tsx:1126）
+2. God routes to Coder → Coder 启动 → `lastWorkerRoleRef.current = 'coder'`（App.tsx:853）
+3. Coder 输出被分类为 `adapter_unavailable` → `INCIDENT_DETECTED`（App.tsx:846-864）
+4. God 收到 incident observation → 发出 `retry_role` 或 `send_to_coder`
+5. 新 Coder 启动 → `lastWorkerRoleRef.current` 仍为 `'coder'`
+6. `isPostReviewerRouting = false` → Reviewer 反馈**不被注入**
+
+问题在于 `lastWorkerRoleRef` 在 step 2 已被设为 `'coder'`，即使 Coder 从未成功处理过 Reviewer 反馈。
+
+**解决方案**: 新增 `reviewerFeedbackPendingRef` 标志位，追踪 Reviewer 反馈是否已被 Coder 成功消费。
+
+**文件**: `src/ui/components/App.tsx`
+
+**变更**:
+
+1. 新增 ref（在现有 ref 声明附近，约第 348-352 行）：
+   ```typescript
+   /** 标记 Reviewer 反馈尚未被 Coder 成功消费 */
+   const reviewerFeedbackPendingRef = useRef<boolean>(false);
+   ```
+
+2. Reviewer 完成时设置 pending（约第 1126 行附近）：
+   ```typescript
+   lastWorkerRoleRef.current = 'reviewer';
+   reviewerFeedbackPendingRef.current = true;  // 新增
+   ```
+
+3. Coder **成功产出 work_output** 时清除 pending（约第 846 行，在 `isWork: true` 分支中）：
+   ```typescript
+   reviewerFeedbackPendingRef.current = false;  // 新增：Coder 已消费反馈
+   ```
+
+4. 更新 `isPostReviewerRouting` 计算逻辑（约第 716 行的 `generateCoderPrompt` 调用处）：
+   ```typescript
+   // 两种情况都应注入 Reviewer 反馈：
+   // 1. 上一个完成的 worker 是 reviewer（正常 post-reviewer 路由）
+   // 2. Reviewer 反馈尚未被 Coder 成功消费（adapter_unavailable 后重试）
+   isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
+     || reviewerFeedbackPendingRef.current,
+   ```
+
+5. 在 accept_task / phase transition 时也清除 pending（与 `lastUnresolvedIssuesRef` 同步清空）：
+   ```typescript
+   // 在 phase transition 清空处（约第 1409 行）
+   reviewerFeedbackPendingRef.current = false;
+   // 在 accept_task 清空处（约第 1414 行）
+   reviewerFeedbackPendingRef.current = false;
+   ```
+
+**更新后的行为矩阵**：
+
+| 场景 | `lastWorkerRoleRef` | `reviewerFeedbackPending` | `isPostReviewerRouting` | Reviewer Feedback 段落 |
+|------|---------------------|--------------------------|------------------------|----------------------|
+| Post-reviewer → Coder (正常) | `'reviewer'` | `true` | `true` | 显示 |
+| Post-coder → Coder (补充) | `'coder'` | `false` | `false` | 不显示 |
+| Coder adapter_unavailable 后重试 | `'coder'` | `true` | `true` | **显示** |
+| Coder 成功完成后再次路由 | `'coder'` | `false` | `false` | 不显示 |
+| Phase transition 后 | any | `false` | depends | 不显示（新阶段） |
+
+### Change 6 (P1): Reviewer 输出含 verdict marker 时不应被误分类为 `meta_output`
+
+**实际案例 (session 8c6ee736)**：Codex Reviewer 的第一次输出包含完整的 CHANGES_REQUESTED 分析（代码阅读、CLI 测试、3 个 blocking issues），但因输出中包含 `"I cannot"` 文本（如 "I cannot find evidence of X"）被 `META_OUTPUT_PATTERNS` 匹配，分类为 `meta_output`，触发了不必要的 Reviewer retry。
+
+**根因**（`observation-classifier.ts:39-42, 74`）：
+
+```typescript
+const META_OUTPUT_PATTERNS: RegExp[] = [
+  /\bI cannot\b/i,
+  /\bAs an AI\b/i,
+];
+// ...
+if (matchesAny(raw, META_OUTPUT_PATTERNS)) return 'meta_output';
+```
+
+分类器是纯正则、无上下文的。`"I cannot find the exact line"` 这样的正常分析文本也会触发 `meta_output`。
+
+**解决方案**：在 `classifyType()` 中，对 `reviewer` source 的输出，如果包含 verdict marker（`[APPROVED]` 或 `[CHANGES_REQUESTED]`），跳过 `meta_output` 分类。
+
+**文件**: `src/god/observation-classifier.ts`
+
+**变更**：在 `classifyType()` 函数中（第 60-83 行），在 `meta_output` 判断处添加 verdict marker 保护：
+
+```typescript
+// 原代码（第 74 行）:
+if (matchesAny(raw, META_OUTPUT_PATTERNS)) return 'meta_output';
+
+// 修改为:
+if (matchesAny(raw, META_OUTPUT_PATTERNS)) {
+  // 如果是 reviewer 输出且包含 verdict marker，说明是真实 review 而非 AI 拒绝
+  const hasVerdict = /\[(APPROVED|CHANGES_REQUESTED)\]/.test(raw);
+  if (source === 'reviewer' && hasVerdict) {
+    // 不分类为 meta_output，继续后续分类流程（将 fallthrough 到 work_output/review_output）
+  } else {
+    return 'meta_output';
+  }
+}
+```
+
+**为什么只保护 reviewer**：Coder 的 `"I cannot"` 更可能是真正的 AI 拒绝（模型拒绝执行任务），而 Reviewer 的 `"I cannot"` 通常是分析过程中的陈述（"I cannot find the bug"、"I cannot verify this claim"）。加上 verdict marker 双重检查，可以精准区分。
+
+### Change 7 (P1): `auth_failed` 误判 — MCP 初始化状态不应触发 adapter auth 分类
+
+**实际案例 (session 8c6ee736)**：Round 1 Coder 实际完成了完整探索（God 在 rawRef 中看到全量结果），但 Claude Code 初始化时 MCP servers (Gmail/Calendar) 报 `needs-auth`，输出中包含类似 `"unauthorized"` 的文本，触发了 `auth_failed` 分类。这导致 God 发起 retry，Round 2 Coder 做了几乎相同的工作，浪费 ~7 分钟。
+
+**根因**（`observation-classifier.ts:27-32, 68`）：
+
+```typescript
+const AUTH_FAILED_PATTERNS: RegExp[] = [
+  /authentication failed/i,
+  /\bunauthorized\b/i,
+  /\b403\b/,
+  /invalid api key/i,
+];
+// ...
+if (matchesAny(raw, AUTH_FAILED_PATTERNS)) return 'auth_failed';
+```
+
+分类器对所有 source 统一匹配，不区分 MCP 初始化日志和 adapter 核心输出。
+
+**解决方案**：与 Change 6 同理，对包含实质工作内容的输出做保护。如果 coder 输出中**同时存在** auth 关键词和有效工作内容（长度超过阈值、或包含代码分析段落），应优先判定为 `work_output`。
+
+**文件**: `src/god/observation-classifier.ts`
+
+**变更**：在 `classifyType()` 函数的 `auth_failed` 判断处（第 68 行）添加实质内容保护：
+
+```typescript
+// 原代码（第 68 行）:
+if (matchesAny(raw, AUTH_FAILED_PATTERNS)) return 'auth_failed';
+
+// 修改为:
+if (matchesAny(raw, AUTH_FAILED_PATTERNS)) {
+  // 如果输出包含大量实质内容（> 500 chars 去除 tool markers 后），
+  // 说明 adapter 实际完成了工作，auth 关键词来自 MCP 初始化等辅助信息
+  const substantiveLength = raw
+    .replace(/^\[(?:Read|Edit|Glob|Grep|Bash|Write|Agent|Tool|shell)(?:\s+(?:result|error))?\].*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim().length;
+  if (substantiveLength > 500) {
+    // auth 关键词来自辅助输出（MCP init 等），不覆盖实质工作
+    // fallthrough 到后续分类
+  } else {
+    return 'auth_failed';
+  }
+}
+```
+
+**阈值 500 chars 的选择**：真正的 auth 失败通常只有几行错误信息（< 200 chars）。如果去除工具标记后仍有 500+ chars 的实质内容，说明 adapter 确实完成了有意义的工作，auth 关键词只是附带的 MCP/环境信息。
+
+### Change 8 (P2): explore 阶段的 `effectiveType` 不应被 God instruction 关键词意外覆盖
+
+**实际案例 (session 8c6ee736)**：Phase-1 (explore) 中 Round 0 正确使用了 explore 指令（"Do NOT modify any files"），但 Round 1+ God 的 instruction 中包含 "fix"（如 "please fix the gap in Claude Code discovery"），触发 `IMPLEMENTATION_KEYWORDS` 匹配，`effectiveType` 从 `explore` 被覆盖为 `code`。Coder 收到了 "Build working solutions"（code 类型）而非 "Do NOT modify any files"（explore 类型）的指令。
+
+**根因**（`god-prompt-generator.ts:87-98`）：
+
+```typescript
+function resolveEffectiveType(
+  phaseType: string | undefined,
+  instruction: string | undefined,
+): string {
+  if (!instruction || !phaseType) return phaseType ?? 'code';
+  if ((phaseType === 'explore' || phaseType === 'discuss') && IMPLEMENTATION_KEYWORDS.test(instruction)) {
+    return 'code';
+  }
+  return phaseType;
+}
+```
+
+`IMPLEMENTATION_KEYWORDS` 是 `/实现|开发|编写|修改|implement|build|write|code|create|fix|develop|modify/i`。像 "fix the gap"、"code discovery" 这样的探索性指令也会匹配 `fix` 和 `code`。
+
+**解决方案**：收窄关键词匹配——仅匹配**明确的实现意图短语**，而非单个动词。
+
+**文件**: `src/god/god-prompt-generator.ts`
+
+**变更**：将 `IMPLEMENTATION_KEYWORDS` 从单词级匹配改为短语级匹配（第 74 行）：
+
+```typescript
+// 原代码:
+const IMPLEMENTATION_KEYWORDS = /实现|开发|编写|修改|implement|build|write|code|create|fix|develop|modify/i;
+
+// 修改为:
+const IMPLEMENTATION_KEYWORDS = /实现(?:这个|该|以下|功能|方案)|开发(?:功能|模块)|编写(?:代码|实现)|修改(?:代码|实现|文件)|implement\s+(?:the|this|a)|build\s+(?:the|this|a)|write\s+(?:the|this|code)|(?:create|fix|develop|modify)\s+(?:the|this|a)\s+(?:code|implementation|feature|function|module)/i;
+```
+
+**替代方案（更保守）**：完全移除自动覆盖，改为让 God 在 `send_to_coder` 时显式指定 `effectiveType`。但这需要修改 GodDecisionEnvelope schema，变更范围更大。上述短语级匹配是最小改动。
 
 ---
 
@@ -335,11 +528,39 @@ return generateCoderPrompt({
 - [ ] 验证 `bug-15-16-17-18-regression.test.ts` 第 437-446 行的 `god_override`/`system_log` 测试仍通过
 - [ ] 现有测试全部通过
 
-### AC-6: 测试覆盖
+### AC-6: adapter_unavailable 上下文保留 (Change 5)
+
+- [ ] `reviewerFeedbackPendingRef` 在 Reviewer 完成时设为 `true`
+- [ ] `reviewerFeedbackPendingRef` 在 Coder 成功产出 `work_output` 时设为 `false`
+- [ ] `reviewerFeedbackPendingRef` 在 phase transition 和 accept_task 时设为 `false`
+- [ ] Coder adapter_unavailable 后重试时，`isPostReviewerRouting` 为 `true`，Reviewer 原文被注入
+- [ ] Coder 成功完成后再次路由时，`isPostReviewerRouting` 为 `false`
+
+### AC-7: meta_output verdict marker 保护 (Change 6)
+
+- [ ] Reviewer 输出包含 `[APPROVED]` 或 `[CHANGES_REQUESTED]` 且包含 "I cannot" 时，**不被**分类为 `meta_output`
+- [ ] Reviewer 输出仅包含 "I cannot" 且无 verdict marker 时，仍被分类为 `meta_output`
+- [ ] Coder 输出包含 "I cannot" 时，仍被分类为 `meta_output`（不受保护）
+
+### AC-8: auth_failed 实质内容保护 (Change 7)
+
+- [ ] Coder 输出包含 auth 关键词但去除工具标记后有 500+ chars 实质内容时，**不被**分类为 `auth_failed`
+- [ ] Coder 输出仅有 auth 错误信息（< 500 chars 实质内容）时，仍被分类为 `auth_failed`
+
+### AC-9: explore 阶段 effectiveType 保护 (Change 8)
+
+- [ ] explore 阶段中 God instruction 包含 "fix the gap" 时，`effectiveType` 保持 `explore`
+- [ ] explore 阶段中 God instruction 包含 "implement the fix" 时，`effectiveType` 切换为 `code`
+
+### AC-10: 测试覆盖
 
 - [ ] `generateCoderPrompt()` 新增测试：post-reviewer routing 时包含 Reviewer Feedback 段落
 - [ ] `generateCoderPrompt()` 新增测试：coder→coder retry 时不包含 Reviewer Feedback 段落
+- [ ] `generateCoderPrompt()` 新增测试：adapter_unavailable 后重试时 `reviewerFeedbackPending` 触发注入
 - [ ] `extractBlockingIssues()` 新增测试：各种 Reviewer 输出格式的阻塞问题提取
+- [ ] `classifyType()` 新增测试：reviewer 含 verdict marker + "I cannot" 不误判为 meta_output
+- [ ] `classifyType()` 新增测试：coder 含 auth keyword + 大量实质内容不误判为 auth_failed
+- [ ] `resolveEffectiveType()` 新增测试：explore 阶段 "fix the gap" 不触发 code 覆盖
 - [ ] `REVIEWER_HANDLING_INSTRUCTIONS` 更新后的内容验证
 - [ ] 回归：所有现有测试通过（2200+ tests）
 
@@ -351,11 +572,13 @@ return generateCoderPrompt({
 
 | 文件 | 变更类型 | 影响 |
 |------|---------|------|
-| `src/god/god-prompt-generator.ts` | 修改 | 新增 `isPostReviewerRouting` 字段、Reviewer Feedback 段落、`extractBlockingIssues()` 函数 |
-| `src/god/god-decision-service.ts` | 修改 | 更新 `REVIEWER_HANDLING_INSTRUCTIONS` 常量 |
-| `src/god/god-system-prompt.ts` | 修改 | 移除 4 种遗留决策格式 |
-| `src/ui/components/App.tsx` | 修改 | 传入 `isPostReviewerRouting`，填充 `lastUnresolvedIssuesRef` |
-| `src/__tests__/god/god-prompt-generator.test.ts` | 修改 | 新增测试用例 |
+| `src/god/god-prompt-generator.ts` | 修改 | 新增 `isPostReviewerRouting` 字段、Reviewer Feedback 段落、`extractBlockingIssues()` 函数；收窄 `IMPLEMENTATION_KEYWORDS` (Change 1,2,8) |
+| `src/god/god-decision-service.ts` | 修改 | 更新 `REVIEWER_HANDLING_INSTRUCTIONS` 常量 (Change 3) |
+| `src/god/god-system-prompt.ts` | 修改 | 移除 4 种遗留决策格式 (Change 4) |
+| `src/god/observation-classifier.ts` | 修改 | `classifyType()` 新增 verdict marker 保护 + auth 实质内容保护 (Change 6,7) |
+| `src/ui/components/App.tsx` | 修改 | 传入 `isPostReviewerRouting`，填充 `lastUnresolvedIssuesRef`，新增 `reviewerFeedbackPendingRef` (Change 1,2,5) |
+| `src/__tests__/god/god-prompt-generator.test.ts` | 修改 | 新增 Reviewer Feedback 注入、adapter retry、explore effectiveType 测试 |
+| `src/__tests__/god/observation-classifier.test.ts` | 修改 | 新增 verdict marker 保护、auth 实质内容保护测试 (Change 6,7) |
 | `src/__tests__/god/audit-bug-regressions.test.ts` | 修改 | 更新第 496-529 行的 2 个测试（`test_regression_r2_bug1_post_coder_actions_match_schema`、`test_regression_r2_bug1_post_reviewer_actions_match_schema`），这些测试断言 `buildGodSystemPrompt` 输出包含 POST_CODER/POST_REVIEWER 的 action names，移除格式后需要删除或改写这些断言 |
 | `src/__tests__/engine/bug-15-16-17-18-regression.test.ts` | 修改 | 更新第 437-446 行的测试（`god system prompt mentions god_override system_log constraint`），该测试断言 prompt 包含 `god_override` 和 `system_log`——由于更新后的 Rules 部分仍保留这些关键词，此测试**可能仍然通过**，但需验证 |
 
@@ -365,15 +588,18 @@ return generateCoderPrompt({
 - **Reviewer prompt 生成** (`generateReviewerPrompt`)：保持不变
 - **God 统一决策路径** (`GodDecisionService.makeDecision`)：SYSTEM_PROMPT 格式不变，仅更新指令文本
 - **Watchdog 错误恢复**：保持不变
-- **Observation classification**：保持不变
+- **Observation classification** (`observation-classifier.ts`)：Change 6/7 修改了 `classifyType()` 逻辑，但仅添加了保护性 guard，不影响正常分类路径
 
 ### 向后兼容性
 
 本变更完全向后兼容：
 - `isPostReviewerRouting` 是可选字段，默认 `undefined`（等同 `false`），不传时行为与当前一致
+- `reviewerFeedbackPendingRef` 默认 `false`，不影响首轮行为
 - `extractBlockingIssues()` 返回空数组时，`Required Fixes` 段落不渲染，行为与当前一致
 - God SYSTEM_PROMPT 更新是指令文本变更，不影响 GodDecisionEnvelope schema
 - 遗留格式清理仅影响 `buildGodSystemPrompt()`，不影响统一决策路径
+- Observation classifier 变更为**缩小误判范围**（添加保护性 guard），不会将之前正确分类的输出重新分类
+- `IMPLEMENTATION_KEYWORDS` 收窄为短语级匹配，之前被正确覆盖的场景仍会被匹配
 
 ---
 
@@ -385,4 +611,8 @@ return generateCoderPrompt({
 | `extractBlockingIssues()` 正则匹配率不高 | `Required Fixes` 段落仍为空 | 这是增量改进——即使提取失败，Coder 仍能从 Reviewer Feedback 原文段落中获取完整信息 |
 | 遗留格式移除影响未知调用方 | task classification 以外的场景出错 | 实现前需搜索 `buildGodSystemPrompt` 所有调用点，确认仅用于 task classification |
 | God 仍然在 message 中重复 Reviewer 内容 | Coder prompt 冗余 | prompt 指令已明确告知 God 不要重复，但 LLM 行为无法 100% 保证；这是 soft guidance，退化场景仅为冗余而非错误 |
-| Coder incident 后 `lastWorkerRoleRef` 残留为 `'reviewer'` | 下一轮 Coder 启动时 `isPostReviewerRouting` 误判为 `true`，注入过期 Reviewer 反馈 | 低概率场景（需要 Reviewer 完成后 Coder 在同轮 incident 且 God 重新路由到 Coder）。退化结果仅为 Coder 看到冗余的旧 Reviewer 反馈，不会导致功能错误。如需进一步加固，可在 incident recovery 路径中重置 `lastWorkerRoleRef` |
+| Coder incident 后 `lastWorkerRoleRef` 残留为 `'reviewer'` | 下一轮 Coder 启动时 `isPostReviewerRouting` 误判为 `true`，注入过期 Reviewer 反馈 | Change 5 的 `reviewerFeedbackPendingRef` 已解决此问题——pending 在 Coder 成功完成后清除，phase transition / accept_task 时也清除 |
+| `reviewerFeedbackPendingRef` 在多轮 coder retry 中持续为 `true` | 同一份 Reviewer 反馈被反复注入 | 预期行为——只要 Coder 没有成功消费反馈，就应该持续注入。一旦 Coder 产出 work_output，pending 被清除 |
+| verdict marker 保护可能放过真正的 AI 拒绝 | Reviewer 输出类似 "I cannot do this task [CHANGES_REQUESTED]" 被当作正常 review | 极低概率。真正的 AI 拒绝不会包含结构化的 `[APPROVED]`/`[CHANGES_REQUESTED]` verdict marker。即使误判，退化结果为 God 收到无意义 review 后做出修正性路由 |
+| auth 实质内容阈值 (500 chars) 过高或过低 | 过高：真正 auth 失败但附带长错误栈不被捕获；过低：MCP 杂音仍触发 auth_failed | 500 chars 基于观察——真正 auth 失败 < 200 chars，有效工作输出 > 1000 chars。可在实际运行中调整阈值 |
+| `IMPLEMENTATION_KEYWORDS` 收窄后，God 无法通过 instruction 触发 explore→code 升级 | 部分应该升级为 code 的场景未被触发 | 短语级匹配仍覆盖明确意图（"implement the fix"），仅排除意外匹配（"fix the gap"、"code discovery"）。如 God 需要明确升级，可使用 `set_phase` action 切换到 code 阶段 |
