@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/TypeScript-5.9-blue" alt="TypeScript">
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A520-green" alt="Node.js">
   <img src="https://img.shields.io/badge/XState-v5-purple" alt="XState">
-  <img src="https://img.shields.io/badge/Tests-2200%2B-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/Tests-2239-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/License-ISC-yellow" alt="License">
 </p>
 
@@ -28,11 +28,11 @@ Unlike single-agent coding tools, Duo ensures **every code change is reviewed be
 
 ### Three-Party Collaboration
 
-| Role | Responsibility | Examples |
-|------|---------------|----------|
+| Role | Responsibility | Supported Tools |
+|------|---------------|-----------------|
 | **Coder** | Writes code, implements features, fixes bugs | Claude Code, Codex, Gemini |
-| **Reviewer** | Reviews code, finds issues, provides feedback | Codex, Claude Code, Gemini |
-| **God LLM** | Orchestrates workflow, routes decisions, judges convergence | Claude Code, Codex |
+| **Reviewer** | Reviews code, finds issues, provides feedback | Claude Code, Codex, Gemini |
+| **God LLM** | Orchestrates workflow, routes decisions, judges convergence | Claude Code, Codex, Gemini |
 
 ### Propose-First Workflow
 
@@ -44,16 +44,13 @@ Duo enforces a **propose-before-implement** discipline:
 4. **Reviewer verifies** the implementation
 5. **God accepts** when quality criteria are met
 
-### 12 Supported AI Tools
+### 3 Supported AI Tools
 
-| Tool | CLI | Format | Tool | CLI | Format |
-|------|-----|--------|------|-----|--------|
-| Claude Code | `claude` | stream-json | Copilot | `copilot` | json |
-| Codex | `codex` | jsonl | Cursor | `cursor` | json |
-| Gemini | `gemini` | stream-json | Aider | `aider` | text |
-| Amazon Q | `q` | text | Cline | `cline` | jsonl |
-| Continue | `cn` | json | Goose | `goose` | text |
-| Amp | `amp` | stream-json | Qwen | `qwen` | stream-json |
+| Tool | CLI Command | Output Format | Role Support |
+|------|-------------|---------------|-------------|
+| Claude Code | `claude` | stream-json | Coder / Reviewer / God |
+| Codex | `codex` | jsonl | Coder / Reviewer / God |
+| Gemini | `gemini` | stream-json | Coder / Reviewer / God |
 
 Mix and match any combination — e.g., Claude Code as Coder + Codex as Reviewer + Gemini as God.
 
@@ -63,8 +60,7 @@ Mix and match any combination — e.g., Claude Code as Coder + Codex as Reviewer
 - **Dynamic Round Management**: Sets iteration limits based on task complexity
 - **Routing Decisions**: Determines next action after each worker output
 - **Convergence Judgment**: Decides when work meets acceptance criteria
-- **Loop Detection**: Identifies and breaks infinite Coder-Reviewer cycles
-- **Drift Detection**: Monitors God decision quality over time
+- **Watchdog AI**: Diagnoses God failures and orchestrates recovery (retry / construct fallback / escalate)
 - **Four-Level Degradation** (L1→L4): Graceful fallback when God fails
 - **Reviewer Feedback Direct Forwarding**: Coder receives Reviewer's original analysis, not God's summary
 
@@ -82,7 +78,7 @@ IDLE → TASK_INIT → CODING → OBSERVING → GOD_DECIDING → EXECUTING
 
 ### Terminal UI
 
-Modern terminal interface built with Ink + React:
+Modern terminal interface built with Ink + React (24 components):
 - Group-chat style message stream (color-coded by role)
 - Real-time streaming LLM output
 - Smart Scroll Lock
@@ -109,7 +105,7 @@ npm run dev
 # Build
 npm run build
 
-# Run tests (2200+ tests)
+# Run tests
 npm test
 ```
 
@@ -147,7 +143,7 @@ Duo uses an 8-layer architecture:
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 3: UI State           24 pure-function state modules  │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 4: Sovereign God      28 files — Observe→Decide→Act   │
+│  Layer 4: Sovereign God      23 files — Observe→Decide→Act   │
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 5: Workflow Engine    XState v5 state machine          │
 ├──────────────────────────────────────────────────────────────┤
@@ -155,7 +151,7 @@ Duo uses an 8-layer architecture:
 ├──────────────────────────────────────────────────────────────┤
 │  Layer 7: Session Manager    Persistence, atomic writes       │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 8: Adapter Layer      12 AI tool adapters + parsers    │
+│  Layer 8: Adapter Layer      3 AI tool adapters + parsers     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -167,22 +163,22 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture docum
 src/
 ├── cli.ts                     # CLI entry — command parsing, Ink rendering
 ├── cli-commands.ts            # Command handlers (start/resume/log)
-├── types/                     # Core type definitions (7 files)
-├── adapters/                  # AI tool adapter layer (12 adapters)
+├── types/                     # Core type definitions (9 files)
+├── adapters/                  # AI tool adapters (claude-code, codex, gemini)
 ├── parsers/                   # Output parsers (stream-json/jsonl/text)
 ├── session/                   # Session management & persistence
 ├── decision/                  # Fallback decision engine
 ├── engine/                    # XState v5 workflow state machine
-├── god/                       # Sovereign God Runtime (28 files)
+├── god/                       # Sovereign God Runtime (23 files)
 │   ├── god-decision-service   # Unified decision pipeline
 │   ├── god-prompt-generator   # Dynamic Coder/Reviewer prompts
 │   ├── observation-classifier # Output classification
 │   ├── hand-executor          # God action execution
-│   ├── watchdog               # Error recovery & degradation
-│   └── ...                    # Task init, routing, convergence, audit
+│   ├── watchdog               # AI-powered error recovery
+│   └── ...                    # Task init, convergence, audit
 └── ui/                        # Terminal UI (Ink + React)
     ├── components/ (24)       # App, MainLayout, Overlays, etc.
-    └── state/ (24)            # Pure-function state management
+    └── *.ts (24)              # Pure-function state management
 ```
 
 ## Documentation
@@ -207,7 +203,7 @@ src/
 | UI Framework | Ink 6 + React 19 |
 | Schema Validation | Zod 4 |
 | Build Tool | tsup |
-| Test Framework | Vitest 4 (2200+ tests) |
+| Test Framework | Vitest 4 (2239 tests) |
 | Package Manager | npm |
 
 ## How It Works
