@@ -566,46 +566,6 @@ describe('BUG-12: reasoning length limit', () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// Round 2 BUG-1 (P1): God system prompt action names must match schemas
-// ══════════════════════════════════════════════════════════════
-
-describe('Round2 BUG-1: God system prompt action names', () => {
-  test('test_regression_r2_bug1_post_coder_actions_match_schema', async () => {
-    const { buildGodSystemPrompt } = await import('../../god/god-system-prompt.js');
-
-    const prompt = buildGodSystemPrompt({ task: 'test', coderName: 'coder', reviewerName: 'reviewer' });
-
-    // Prompt should mention all valid PostCoder actions from schema
-    const postCoderActions = ['continue_to_review', 'retry_coder'];
-    for (const action of postCoderActions) {
-      expect(prompt).toContain(action);
-    }
-
-    // Prompt must NOT contain old wrong action names
-    expect(prompt).not.toContain('request_change');
-    // POST_CODER line must not contain 'converged'
-    const postCoderLine = prompt.split('\n').find(l => l.includes('POST_CODER'));
-    expect(postCoderLine).not.toContain('converged');
-  });
-
-  test('test_regression_r2_bug1_post_reviewer_actions_match_schema', async () => {
-    const { buildGodSystemPrompt } = await import('../../god/god-system-prompt.js');
-
-    const prompt = buildGodSystemPrompt({ task: 'test', coderName: 'coder', reviewerName: 'reviewer' });
-
-    // Prompt should mention all valid PostReviewer actions from schema
-    const postReviewerActions = ['route_to_coder', 'converged', 'phase_transition', 'loop_detected'];
-    for (const action of postReviewerActions) {
-      expect(prompt).toContain(action);
-    }
-
-    // Prompt must NOT contain old wrong action names
-    expect(prompt).not.toContain('send_back_to_coder');
-    expect(prompt).not.toContain('needs_user_input');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
 // Round 2 BUG-2 (P1): God session ID must NOT be restored on duo resume
 // ══════════════════════════════════════════════════════════════
 

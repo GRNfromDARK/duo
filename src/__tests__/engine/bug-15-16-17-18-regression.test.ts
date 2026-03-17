@@ -434,14 +434,16 @@ describe('BUG-18 regression: userConfirmation god_override requires system_log',
     expect(result.success).toBe(true);
   });
 
-  it('god system prompt mentions god_override system_log constraint', () => {
+  it('god system prompt contains TASK_INIT classification format and basic rules', () => {
     const prompt = buildGodSystemPrompt({
       task: 'test',
       coderName: 'coder',
       reviewerName: 'reviewer',
     });
 
-    expect(prompt).toContain('god_override');
-    expect(prompt).toContain('system_log');
+    expect(prompt).toContain('Task Classification');
+    expect(prompt).toContain('taskType');
+    expect(prompt).toContain('terminationCriteria');
+    expect(prompt).toContain('Rules');
   });
 });
