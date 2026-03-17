@@ -7,6 +7,7 @@
 import type { GodAuditEntry } from './god-audit.js';
 import { appendAuditLog } from './god-audit.js';
 import type { ConvergenceLogEntry } from './god-convergence.js';
+import { stripToolMarkers } from './god-decision-service.js';
 
 // ── Types ──
 
@@ -22,30 +23,13 @@ export interface PromptContext {
   phaseType?: 'explore' | 'code' | 'discuss' | 'review' | 'debug';
   lastReviewerOutput?: string;
   unresolvedIssues?: string[];
+  /** Whether this round is a post-reviewer routing (God forwarding reviewer conclusions to coder) */
+  isPostReviewerRouting?: boolean;
   suggestions?: string[];
   convergenceLog?: ConvergenceLogEntry[];
   lastCoderOutput?: string;
   /** God auto-decision instruction (highest priority) */
   instruction?: string;
-}
-
-export interface GodDecisionContext {
-  decisionPoint: 'POST_CODER' | 'POST_REVIEWER' | 'CONVERGENCE';
-  round: number;
-  maxRounds: number;
-  taskGoal: string;
-  lastCoderOutput?: string;
-  lastReviewerOutput?: string;
-  unresolvedIssues?: string[];
-  convergenceLog?: ConvergenceLogEntry[];
-  currentPhaseId?: string;
-  currentPhaseType?: 'explore' | 'code' | 'discuss' | 'review' | 'debug';
-  phases?: {
-    id: string;
-    name: string;
-    type: 'explore' | 'code' | 'discuss' | 'review' | 'debug' | 'compound';
-    description: string;
-  }[];
 }
 
 export interface AuditOptions {
@@ -54,11 +38,6 @@ export interface AuditOptions {
 }
 
 // ── Constants ──
-
-/** Maximum prompt length in characters (AC-014) */
-export const MAX_PROMPT_LENGTH = 100_000;
-
-const MAX_AUDIT_SUMMARY = 500;
 
 // ── Task-type strategy templates (FR-003a) ──
 
@@ -157,6 +136,17 @@ Focus on producing high-quality work output. Do not make management decisions.`)
     sections.push(`## God Instruction (HIGHEST PRIORITY)\n${ctx.instruction}`);
   }
 
+  // Priority 0.5: Reviewer feedback (direct forwarding, gated by isPostReviewerRouting)
+  if (ctx.isPostReviewerRouting && ctx.lastReviewerOutput) {
+    const cleaned = stripToolMarkers(ctx.lastReviewerOutput);
+    sections.push(
+      `## Reviewer Feedback (Round ${ctx.round})\n` +
+      `The following is the Reviewer's original analysis from the previous round. ` +
+      `Read it carefully — it contains specific findings, code references, and root cause analysis.\n\n` +
+      cleaned
+    );
+  }
+
   // Priority 1: unresolvedIssues (highest - Reviewer-Driven)
   if (ctx.unresolvedIssues && ctx.unresolvedIssues.length > 0) {
     const issueList = ctx.unresolvedIssues
@@ -192,21 +182,15 @@ Focus on producing high-quality work output. Do not make management decisions.`)
 
   let prompt = sections.join('\n\n');
 
-  // Enforce length limit (AC-014)
-  prompt = enforceMaxLength(prompt);
-
   // Write audit log (AC-015 / FR-003c)
   if (audit) {
-    const summary = prompt.length > MAX_AUDIT_SUMMARY
-      ? prompt.slice(0, MAX_AUDIT_SUMMARY)
-      : prompt;
     const entry: GodAuditEntry = {
       seq: audit.seq,
       timestamp: new Date().toISOString(),
       round: ctx.round,
       decisionType: 'PROMPT_GENERATION',
       inputSummary: `taskType=${ctx.taskType}, round=${ctx.round}/${ctx.maxRounds}`,
-      outputSummary: summary,
+      outputSummary: prompt,
       decision: { promptType: 'coder', taskType: ctx.taskType, effectiveType },
     };
     appendAuditLog(audit.sessionDir, entry);
@@ -292,53 +276,6 @@ Focus on thorough, honest review. Your observations help God make the best decis
 
   sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);
 
-  return enforceMaxLength(sections.join('\n\n'));
+  return sections.join('\n\n');
 }
 
-/**
- * Generate a God decision prompt for routing decisions at POST_CODER/POST_REVIEWER/CONVERGENCE.
- */
-export function generateGodDecisionPrompt(ctx: GodDecisionContext): string {
-  const sections: string[] = [];
-
-  sections.push(`## Decision Point: ${ctx.decisionPoint}`);
-  sections.push(`## Task\n${ctx.taskGoal}`);
-  sections.push(`## Round Info\nRound ${ctx.round} of ${ctx.maxRounds}`);
-
-  if (ctx.phases && ctx.phases.length > 0 && ctx.currentPhaseId) {
-    const phaseList = ctx.phases
-      .map((phase) => `${phase.id === ctx.currentPhaseId ? '->' : '  '} ${phase.id} (${phase.type}): ${phase.name} - ${phase.description}`)
-      .join('\n');
-    sections.push(
-      `## Compound Task Phases\nCurrent: ${ctx.currentPhaseId} (${ctx.currentPhaseType ?? 'unknown'})\n\n${phaseList}`,
-    );
-  }
-
-  if (ctx.lastCoderOutput) {
-    sections.push(`## Last Coder Output\n${ctx.lastCoderOutput}`);
-  }
-
-  if (ctx.lastReviewerOutput) {
-    sections.push(`## Last Reviewer Output\n${ctx.lastReviewerOutput}`);
-  }
-
-  if (ctx.unresolvedIssues && ctx.unresolvedIssues.length > 0) {
-    sections.push(`## Unresolved Issues\n${ctx.unresolvedIssues.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}`);
-  }
-
-  if (ctx.convergenceLog && ctx.convergenceLog.length > 0) {
-    const log = ctx.convergenceLog
-      .map(e => `Round ${e.round}: ${e.blockingIssueCount} blocking issues (${e.classification})`)
-      .join('\n');
-    sections.push(`## Convergence Log\n${log}`);
-  }
-
-  return enforceMaxLength(sections.join('\n\n'));
-}
-
-// ── Internal helpers ──
-
-function enforceMaxLength(prompt: string): string {
-  if (prompt.length <= MAX_PROMPT_LENGTH) return prompt;
-  return prompt.slice(0, MAX_PROMPT_LENGTH - 3) + '...';
-}

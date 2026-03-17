@@ -8,12 +8,10 @@ import type { GodAuditEntry } from '../../god/god-audit.js';
 
 // ── Types expected from god-prompt-generator ──
 
-import type { PromptContext, GodDecisionContext } from '../../god/god-prompt-generator.js';
+import type { PromptContext } from '../../god/god-prompt-generator.js';
 import {
   generateCoderPrompt,
-  generateGodDecisionPrompt,
   generateReviewerPrompt,
-  MAX_PROMPT_LENGTH,
 } from '../../god/god-prompt-generator.js';
 
 // ── Mock audit log ──
@@ -32,18 +30,6 @@ function makePromptContext(overrides: Partial<PromptContext> = {}): PromptContex
     round: 1,
     maxRounds: 5,
     taskGoal: 'Implement user authentication',
-    ...overrides,
-  };
-}
-
-function makeGodDecisionContext(overrides: Partial<GodDecisionContext> = {}): GodDecisionContext {
-  return {
-    decisionPoint: 'POST_REVIEWER',
-    round: 2,
-    maxRounds: 5,
-    taskGoal: 'Implement user authentication',
-    lastCoderOutput: 'Added login endpoint',
-    lastReviewerOutput: 'Missing input validation',
     ...overrides,
   };
 }
@@ -211,15 +197,16 @@ describe('FR-003b: Reviewer-Driven prompt assembly priority', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('FR-003c: Prompt quality assurance', () => {
-  // AC-4: prompt 长度不超过合理限制
-  test('AC-4: prompt length does not exceed MAX_PROMPT_LENGTH', () => {
+  // AC-4: prompt includes all content without artificial truncation
+  test('AC-4: prompt includes full task goal and issues', () => {
+    const taskGoal = 'A'.repeat(50000);
     const ctx = makePromptContext({
-      taskGoal: 'A'.repeat(50000),
+      taskGoal,
       unresolvedIssues: Array.from({ length: 100 }, (_, i) => `Issue ${i}: ${'x'.repeat(500)}`),
     });
     const prompt = generateCoderPrompt(ctx);
 
-    expect(prompt.length).toBeLessThanOrEqual(MAX_PROMPT_LENGTH);
+    expect(prompt).toContain(taskGoal);
   });
 
   // AC-5: prompt 摘要写入 audit log
@@ -235,10 +222,10 @@ describe('FR-003c: Prompt quality assurance', () => {
 
     const entry: GodAuditEntry = call[1];
     expect(entry.decisionType).toBe('PROMPT_GENERATION');
-    expect(entry.outputSummary.length).toBeLessThanOrEqual(500);
+    expect(entry.outputSummary.length).toBeGreaterThan(0);
   });
 
-  test('audit log entry contains prompt summary truncated to 500 chars', () => {
+  test('audit log entry contains full prompt summary without truncation', () => {
     mockAppendAuditLog.mockClear();
 
     const ctx = makePromptContext({
@@ -247,7 +234,7 @@ describe('FR-003c: Prompt quality assurance', () => {
     generateCoderPrompt(ctx, { sessionDir: '/tmp/test-session', seq: 2 });
 
     const entry: GodAuditEntry = mockAppendAuditLog.mock.calls[0][1];
-    expect(entry.outputSummary.length).toBeLessThanOrEqual(500);
+    expect(entry.outputSummary).toContain('X'.repeat(1000));
   });
 
   test('no audit log when sessionDir not provided', () => {
@@ -257,29 +244,6 @@ describe('FR-003c: Prompt quality assurance', () => {
     generateCoderPrompt(ctx);
 
     expect(mockAppendAuditLog).not.toHaveBeenCalled();
-  });
-});
-
-describe('generateGodDecisionPrompt (AI-driven)', () => {
-  test('includes phase context in POST_REVIEWER prompt', () => {
-    const prompt = generateGodDecisionPrompt({
-      decisionPoint: 'POST_REVIEWER',
-      round: 2,
-      maxRounds: 10,
-      taskGoal: 'implement feature',
-      lastReviewerOutput: '[APPROVED]',
-      currentPhaseId: 'phase-1',
-      currentPhaseType: 'explore',
-      phases: [
-        { id: 'phase-1', name: 'Explore', type: 'explore', description: 'explore the codebase' },
-        { id: 'phase-2', name: 'Code', type: 'code', description: 'implement changes' },
-      ],
-    });
-
-    expect(prompt).toContain('phase-1');
-    expect(prompt).toContain('phase-2');
-    expect(prompt).toContain('Explore');
-    expect(prompt).toContain('->');
   });
 });
 
@@ -311,40 +275,6 @@ describe('generateCoderPrompt (phase conflict resolution)', () => {
     });
 
     expect(prompt).toContain('Do NOT modify any files');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════
-// God Decision Prompt
-// ══════════════════════════════════════════════════════════════════
-
-describe('generateGodDecisionPrompt', () => {
-  test('generates decision prompt with context', () => {
-    const ctx = makeGodDecisionContext();
-    const prompt = generateGodDecisionPrompt(ctx);
-
-    expect(prompt).toContain('POST_REVIEWER');
-    expect(prompt).toContain('Implement user authentication');
-  });
-
-  test('includes reviewer output in POST_REVIEWER context', () => {
-    const ctx = makeGodDecisionContext({
-      decisionPoint: 'POST_REVIEWER',
-      lastReviewerOutput: 'Needs error handling',
-    });
-    const prompt = generateGodDecisionPrompt(ctx);
-
-    expect(prompt).toContain('Needs error handling');
-  });
-
-  test('includes coder output in POST_CODER context', () => {
-    const ctx = makeGodDecisionContext({
-      decisionPoint: 'POST_CODER',
-      lastCoderOutput: 'Implemented login flow',
-    });
-    const prompt = generateGodDecisionPrompt(ctx);
-
-    expect(prompt).toContain('Implemented login flow');
   });
 });
 
@@ -414,5 +344,85 @@ describe('generateReviewerPrompt', () => {
 
       expect(prompt).toContain('do not withhold approval for non-blocking suggestions');
     }
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// Reviewer Feedback Direct Forwarding (Change 1)
+// ══════════════════════════════════════════════════════════════════
+
+describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
+  test('injects Reviewer Feedback section when isPostReviewerRouting is true', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 3,
+      isPostReviewerRouting: true,
+      lastReviewerOutput: '[CHANGES_REQUESTED]\n1. Blocking: Missing null check on line 42\n2. The function does not handle edge case X',
+      instruction: 'Fix the issues identified by the Reviewer',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('## Reviewer Feedback (Round 3)');
+    expect(prompt).toContain('Missing null check on line 42');
+    expect(prompt).toContain('does not handle edge case X');
+  });
+
+  test('Reviewer Feedback appears after God Instruction and before Required Fixes', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 2,
+      isPostReviewerRouting: true,
+      lastReviewerOutput: 'Reviewer analysis here',
+      instruction: 'God instruction here',
+      unresolvedIssues: ['Fix issue A'],
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    const godIdx = prompt.indexOf('## God Instruction');
+    const reviewerIdx = prompt.indexOf('## Reviewer Feedback');
+    const fixesIdx = prompt.indexOf('## Required Fixes');
+
+    expect(godIdx).toBeLessThan(reviewerIdx);
+    expect(reviewerIdx).toBeLessThan(fixesIdx);
+  });
+
+  test('does NOT inject Reviewer Feedback when isPostReviewerRouting is false', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 2,
+      isPostReviewerRouting: false,
+      lastReviewerOutput: 'Stale reviewer output from previous round',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).not.toContain('## Reviewer Feedback');
+    expect(prompt).not.toContain('Stale reviewer output');
+  });
+
+  test('does NOT inject Reviewer Feedback when isPostReviewerRouting is undefined (backward compat)', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 1,
+      lastReviewerOutput: 'Some reviewer output',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).not.toContain('## Reviewer Feedback');
+  });
+
+  test('strips tool markers from reviewer output before injection', () => {
+    const ctx = makePromptContext({
+      taskType: 'code',
+      round: 2,
+      isPostReviewerRouting: true,
+      lastReviewerOutput: '[Read] src/index.ts\n[Bash] npm test\nThe code has a bug on line 10.\n[CHANGES_REQUESTED]',
+    });
+    const prompt = generateCoderPrompt(ctx);
+
+    expect(prompt).toContain('## Reviewer Feedback');
+    expect(prompt).toContain('The code has a bug on line 10.');
+    // Tool markers should be stripped
+    expect(prompt).not.toMatch(/^\[Read\]/m);
+    expect(prompt).not.toMatch(/^\[Bash\]/m);
   });
 });
