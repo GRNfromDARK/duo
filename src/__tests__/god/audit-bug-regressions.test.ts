@@ -15,7 +15,6 @@ import {
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import { evaluateRules } from '../../god/rule-engine.js';
 import { validateCLIChoices } from '../../session/session-starter.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
 import { cleanupOldDecisions } from '../../god/god-audit.js';
 import {
   GodTaskAnalysisSchema,
@@ -285,31 +284,6 @@ describe('BUG-7: god adapter validation', () => {
   test('test_regression_7_no_god_param_still_works', () => {
     const result = validateCLIChoices('claude-code', 'codex', detected);
     expect(result.valid).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-// BUG-8 (P1): Soft approval must exclude [CHANGES_REQUESTED]
-// ══════════════════════════════════════════════════════════════
-
-describe('BUG-8: soft approval with CHANGES_REQUESTED exclusion', () => {
-  const service = new ConvergenceService();
-
-  test('test_bug_8_changes_requested_prevents_soft_approval', () => {
-    // Output with soft-approval language BUT also [CHANGES_REQUESTED] marker
-    // and explicit "Blocking: 0" so countBlockingIssues returns 0
-    const output = 'Blocking: 0\nLGTM overall, but [CHANGES_REQUESTED] for minor fix.';
-    const result = service.classify(output);
-
-    expect(result.classification).not.toBe('soft_approved');
-    expect(result.classification).toBe('changes_requested');
-  });
-
-  test('test_regression_8_soft_approval_still_works_without_changes_requested', () => {
-    const output = 'Blocking: 0\nLGTM, looks good to me!';
-    const result = service.classify(output);
-
-    expect(result.classification).toBe('soft_approved');
   });
 });
 
@@ -1383,25 +1357,6 @@ describe('Round 8 BUG-1: saveState merges partial state', () => {
   });
 });
 
-// ── BUG-2: [CHANGES_REQUESTED] should not inflate blocking issue count ──
-
-describe('Round 8 BUG-2: CHANGES_REQUESTED not counted as blocking issue', () => {
-  test('test_bug_r8_2_changes_requested_not_counted', () => {
-    const svc = new ConvergenceService();
-    const output = '**Blocking**: Missing null check\n**Blocking**: SQL injection\n\n[CHANGES_REQUESTED]';
-    const count = svc.countBlockingIssues(output);
-    // Should be exactly 2, not 3 (the [CHANGES_REQUESTED] tag should not be counted)
-    expect(count).toBe(2);
-  });
-
-  test('test_bug_r8_2_only_changes_requested_yields_zero', () => {
-    const svc = new ConvergenceService();
-    const output = 'Some feedback text.\n\n[CHANGES_REQUESTED]';
-    const count = svc.countBlockingIssues(output);
-    expect(count).toBe(0);
-  });
-});
-
 // ── BUG-4: Fence regex allows trailing whitespace ──
 
 describe('Round 8 BUG-4: fence regex handles trailing whitespace', () => {
@@ -1767,43 +1722,6 @@ describe('R10-BUG-3: EXECUTING→CODING respects round increment (Card D.1)', ()
     expect(actor.getSnapshot().context.round).toBe(4);
 
     actor.stop();
-  });
-});
-
-// ── BUG-4 (R10-P2): SIMILARITY_THRESHOLD raised to avoid false positives ──
-
-describe('R10-BUG-4: Similarity threshold avoids false positive loop detection', () => {
-  test('test_bug_r10_4_different_issues_same_project_not_loop', () => {
-    const svc = new ConvergenceService({ maxRounds: 10 });
-
-    // Two outputs about the same project sharing many domain keywords but discussing different issues.
-    // Jaccard similarity ~0.45 — would be falsely detected at 0.35 threshold but not at 0.45.
-    const output1 = 'The session manager configuration needs update. The adapter factory should handle the service registry lookup. Fix the convergence check for blocking issues.';
-    const output2 = 'The session manager validation needs review. The adapter factory should handle the service timeout errors correctly. Fix the convergence check for stagnant progress detection.';
-
-    const result = svc.evaluate(output2, {
-      currentRound: 3,
-      previousOutputs: [output1],
-    });
-
-    // These discuss different issues (config/registry vs validation/timeout), should NOT be a loop
-    expect(result.loopDetected).toBe(false);
-  });
-
-  test('test_bug_r10_4_truly_similar_outputs_still_detected_as_loop', () => {
-    const svc = new ConvergenceService({ maxRounds: 10 });
-
-    // Nearly identical outputs — genuine loop
-    const output1 = 'Fix the null check on line 42 of session-manager.ts. The variable sessionData could be undefined when accessed.';
-    const output2 = 'The null check on line 42 of session-manager.ts is still missing. The sessionData variable could be undefined.';
-
-    const result = svc.evaluate(output2, {
-      currentRound: 3,
-      previousOutputs: [output1],
-    });
-
-    // These are genuinely the same issue restated — should still be detected
-    expect(result.loopDetected).toBe(true);
   });
 });
 

@@ -173,27 +173,25 @@ function applyPostReviewerCorrections(
   return corrected;
 }
 
-// ── Cross-validation with local ConvergenceService ──
+// ── Cross-validation (audit-only) ──
 
 /**
- * Cross-validate God's classification against local ConvergenceService classification.
- * On disagreement, local result is authoritative.
+ * Cross-validate God's classification against a local heuristic.
+ * Audit-only: logs disagreement but God is authoritative.
  *
  * Mapping: soft_approved (local-only) is treated as equivalent to approved for comparison.
  */
 export function crossValidate(
   godClassification: string,
   localClassification: string,
-): { agree: boolean; source: 'god' | 'local' } {
+): { agree: boolean; source: 'god' } {
   const normalizedGod = normalize(godClassification);
   const normalizedLocal = normalize(localClassification);
 
-  if (normalizedGod === normalizedLocal) {
-    return { agree: true, source: 'god' };
-  }
-
-  // Disagreement: local wins (per FR-G02)
-  return { agree: false, source: 'local' };
+  return {
+    agree: normalizedGod === normalizedLocal,
+    source: 'god',  // God always authoritative — local is audit-only
+  };
 }
 
 /**

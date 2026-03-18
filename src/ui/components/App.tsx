@@ -18,7 +18,6 @@ import { ContextManager } from '../../session/context-manager.js';
 import type { RoundRecord } from '../../session/context-manager.js';
 import { SessionManager } from '../../session/session-manager.js';
 import type { LoadedSession } from '../../session/session-manager.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
 import { MainLayout } from './MainLayout.js';
 import type { WorkflowStateHint } from './MainLayout.js';
 import type { WorkflowStatus } from './StatusBar.js';
@@ -300,7 +299,6 @@ function SessionRunner({
       promptsDir: path.join(config.projectDir, '.duo', 'prompts'),
     }),
   );
-  const convergenceRef = useRef(new ConvergenceService({ maxRounds: MAX_ROUNDS }));
   const sessionManagerRef = useRef(
     new SessionManager(path.join(config.projectDir, '.duo', 'sessions')),
   );

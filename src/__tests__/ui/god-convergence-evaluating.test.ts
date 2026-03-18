@@ -1,7 +1,7 @@
 /**
- * Card B.3: EVALUATING — ConvergenceService → GodConvergence integration tests.
+ * Card B.3: EVALUATING — GodConvergence integration tests.
  *
- * Tests the God convergence logic that replaces convergenceRef.current.evaluate() in App.tsx.
+ * Tests the God convergence logic (evaluateConvergence).
  * Verifies: AC-1 through AC-7 (God convergence, blockingIssueCount invariant,
  * criteriaProgress check, convergenceLog append, degradation fallback,
  * all tests passing, existing tests unaffected).
@@ -9,7 +9,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { CLIAdapter, OutputChunk } from '../../types/adapter.js';
 import { evaluateConvergence, type ConvergenceLogEntry, type ConvergenceResult } from '../../god/god-convergence.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
 import * as godAudit from '../../god/god-audit.js';
 
 // ── Mock God adapter ──
@@ -68,9 +67,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ── AC-1: God makes convergence judgment replacing ConvergenceService ──
+// ── AC-1: God makes convergence judgment ──
 
-describe('AC-1: God convergence replaces ConvergenceService', () => {
+describe('AC-1: God convergence evaluation', () => {
   it('calls evaluateConvergence with God adapter and reviewer output', async () => {
     const adapter = createMockGodAdapter({
       classification: 'approved',
@@ -238,29 +237,6 @@ describe('AC-4: convergenceLog is correctly appended', () => {
     expect(convergenceLog).toHaveLength(2);
     expect(convergenceLog[0].round).toBe(1);
     expect(convergenceLog[1].round).toBe(2);
-  });
-});
-
-// ── AC-5: God failure degrades to v1 ConvergenceService ──
-
-describe('AC-5: God failure falls back to v1 ConvergenceService', () => {
-  it('v1 ConvergenceService works as fallback when evaluateConvergence throws', async () => {
-    const failingAdapter = createFailingGodAdapter(new Error('God timeout'));
-
-    try {
-      await evaluateConvergence(failingAdapter, 'Review output', createBaseContext());
-    } catch {
-      // Expected — when God is down, the system pauses and falls back to v1
-    }
-
-    // v1 ConvergenceService should still work as fallback
-    const v1Service = new ConvergenceService({ maxRounds: 20 });
-    const v1Result = v1Service.evaluate('[APPROVED] All good', {
-      currentRound: 3,
-      previousOutputs: [],
-    });
-    expect(v1Result.shouldTerminate).toBe(true);
-    expect(v1Result.classification).toBe('approved');
   });
 });
 

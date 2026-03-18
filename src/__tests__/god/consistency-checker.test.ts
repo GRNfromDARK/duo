@@ -239,7 +239,7 @@ describe('checkConsistency — audit log integration', () => {
 
 });
 
-// ── AC-5: Cross-validation, local wins on disagreement ──
+// ── AC-5: Cross-validation, audit-only (God always authoritative) ──
 
 describe('crossValidate', () => {
   test('agreement returns god as source', () => {
@@ -248,16 +248,16 @@ describe('crossValidate', () => {
     expect(result.source).toBe('god');
   });
 
-  test('disagreement returns local as source', () => {
+  test('disagreement returns god as source (God authoritative)', () => {
     const result = crossValidate('approved', 'changes_requested');
     expect(result.agree).toBe(false);
-    expect(result.source).toBe('local');
+    expect(result.source).toBe('god');
   });
 
-  test('god changes_requested vs local approved → disagree, local wins', () => {
+  test('god changes_requested vs local approved → disagree, god authoritative', () => {
     const result = crossValidate('changes_requested', 'approved');
     expect(result.agree).toBe(false);
-    expect(result.source).toBe('local');
+    expect(result.source).toBe('god');
   });
 
   test('both changes_requested → agree', () => {
