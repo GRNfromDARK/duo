@@ -113,7 +113,7 @@ describe('initializeTask', () => {
     const result = await initializeTask(adapter, 'test', 'system prompt');
 
     expect(result).toBeNull();
-    // Should only be called once (no internal retry — outer withGodFallback handles retries)
+    // Should only be called once (no internal retry — outer withRetry handles retries)
     expect(callCount).toBe(1);
   });
 

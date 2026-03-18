@@ -43,7 +43,7 @@ import * as path from 'node:path';
 import { initializeTask } from '../../god/task-init.js';
 import { buildGodSystemPrompt } from '../../god/god-system-prompt.js';
 import { GodAuditLogger, logEnvelopeDecision } from '../../god/god-audit.js';
-import type { GodRetryController } from '../god-fallback.js';
+import { withRetry, isPaused } from '../god-fallback.js';
 import type { GodTaskAnalysis, GodAutoDecision } from '../../types/god-schemas.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
@@ -54,7 +54,6 @@ import { GodDecisionBanner } from './GodDecisionBanner.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
 import { PhaseTransitionBanner } from './PhaseTransitionBanner.js';
 import { CompletionScreen } from './CompletionScreen.js';
-import { withGodFallback, withGodFallbackSync } from '../god-fallback.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
 import { classifyInterruptIntent } from '../../god/interrupt-clarifier.js';
 import { buildContinuedTaskPrompt } from '../completion-flow.js';
@@ -310,25 +309,6 @@ function SessionRunner({
   );
   const outputManagerRef = useRef(new OutputStreamManager());
   const godAuditLoggerRef = useRef<GodAuditLogger | null>(null);
-  // GodRetryController wraps WatchdogService for withGodFallback.
-  // On failure, uses simple retry+backoff+pause logic.
-  const godRetryControllerRef = useRef<GodRetryController>({
-    isGodAvailable: () => watchdogRef.current.isGodAvailable(),
-    handleGodSuccess: () => watchdogRef.current.handleSuccess(),
-    handleGodFailure: async (_error) => {
-      const shouldRetry = watchdogRef.current.shouldRetry();
-      if (shouldRetry) {
-        const backoff = watchdogRef.current.getBackoffMs();
-        await new Promise(resolve => setTimeout(resolve, backoff));
-      }
-      return {
-        retry: shouldRetry,
-        notification: shouldRetry
-          ? { type: 'retrying' as const, message: `Watchdog: retrying (attempt ${watchdogRef.current.getConsecutiveFailures()})` }
-          : { type: 'god_disabled' as const, message: `Watchdog: God paused after ${WatchdogService.MAX_RETRIES} failures` },
-      };
-    },
-  });
 
   // ── Mutable orchestration state ──
   const roundsRef = useRef<RoundRecord[]>(restoredRuntime?.rounds ?? []);
@@ -516,7 +496,7 @@ function SessionRunner({
   }, []);
 
   // ── TASK_INIT state: run God intent parsing ──
-  // C.2: Uses withGodFallback for unified retry + degradation (AC-2, AC-3)
+  // Uses withRetry for retry + backoff + pause
   useEffect(() => {
     if (stateValue !== 'TASK_INIT') return;
 
@@ -528,8 +508,7 @@ function SessionRunner({
       godAuditLoggerRef.current = new GodAuditLogger(sessionDir);
     }
 
-    // God disabled → skip immediately (withGodFallback handles this but we want
-    // the specific "disabled" message before the async IIFE)
+    // God paused → skip immediately
     if (!watchdogRef.current.isGodAvailable()) {
       addMessage({
         role: 'system',
@@ -550,8 +529,7 @@ function SessionRunner({
     (async () => {
       const startTime = Date.now();
 
-      const { result, usedGod, notification } = await withGodFallback(
-        godRetryControllerRef.current,
+      const retryResult = await withRetry(
         async () => {
           const systemPrompt = buildGodSystemPrompt({
             task: config.task,
@@ -572,7 +550,7 @@ function SessionRunner({
           if (!r) throw new Error('TASK_INIT returned null (extraction/validation failed)');
           return r;
         },
-        () => null, // v1 fallback: no task analysis
+        watchdogRef.current,
       );
 
       // TASK_INIT uses buildGodSystemPrompt (5 decision points format).
@@ -583,12 +561,8 @@ function SessionRunner({
 
       if (cancelled) return;
 
-      // Show degradation notification if any (AC-5)
-      if (notification) {
-        addMessage({ role: 'system', content: notification.message, timestamp: Date.now() });
-      }
-
-      if (usedGod && result) {
+      if (!isPaused(retryResult)) {
+        const result = retryResult.result;
         setTaskAnalysis(result.analysis);
 
         // Log to God audit + update StatusBar latency (Card D.2)
@@ -609,20 +583,25 @@ function SessionRunner({
         addTimelineEvent('task_start', `God TASK_INIT: ${result.analysis.taskType}, ${result.analysis.suggestedMaxRounds} rounds`);
         setShowTaskAnalysisCard(true);
       } else {
-        // Fallback path — log failure to God audit
-        if (!usedGod && godAuditLoggerRef.current) {
+        // Paused — log failure to God audit
+        if (godAuditLoggerRef.current) {
           godAuditLoggerRef.current.append({
             timestamp: new Date().toISOString(),
             round: 0,
             decisionType: 'TASK_INIT_FAILURE',
             inputSummary: config.task,
-            outputSummary: `Degraded to v1: watchdog failures=${watchdogRef.current.getConsecutiveFailures()}`,
+            outputSummary: `Paused: watchdog failures=${watchdogRef.current.getConsecutiveFailures()}`,
             latencyMs: Date.now() - startTime,
-            decision: { godDisabled: watchdogRef.current.isPaused() },
+            decision: { godPaused: watchdogRef.current.isPaused() },
           });
         }
 
-        addTimelineEvent('error', 'God TASK_INIT failed, using v1 fallback');
+        addMessage({
+          role: 'system',
+          content: `God TASK_INIT failed after ${retryResult.retryCount} retries. System paused.`,
+          timestamp: Date.now(),
+        });
+        addTimelineEvent('error', 'God TASK_INIT failed, system paused');
         send({ type: 'TASK_INIT_SKIP' });
       }
     })();
@@ -703,56 +682,36 @@ function SessionRunner({
         pendingInstructionRef.current = null;
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
 
-        // B.4 + C.2: God dynamic prompt generation with withGodFallbackSync (FR-003, AR-004, AC-2)
+        // Prompt generation — direct call (pure template, no retry needed)
         let prompt: string;
         let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
         if (choiceRouteRef.current?.target === 'coder') {
           prompt = choiceRouteRef.current.prompt;
           promptSource = 'choice_route';
         } else {
-          const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
-            watchdogRef.current,
-            () => {
-              if (!taskAnalysis) throw new Error('No taskAnalysis available');
-              return generateCoderPrompt({
-                taskType: taskAnalysis.taskType as PromptContext['taskType'],
-                round: ctx.round,
-                maxRounds: ctx.maxRounds,
-                taskGoal: config.task,
-                lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
-                unresolvedIssues: lastUnresolvedIssuesRef.current,
-                convergenceLog: convergenceLogRef.current,
-                instruction: interruptInstruction,
-                phaseId: currentPhaseId ?? undefined,
-                phaseType: currentPhaseId
-                  ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-                  : undefined,
-                isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
-                  || reviewerFeedbackPendingRef.current,
-              }, {
-                sessionDir: sessionIdRef.current
-                  ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
-                  : path.join(config.projectDir, '.duo', 'sessions'),
-                seq: ++auditSeqRef.current,
-              });
-            },
-            () => contextManagerRef.current.buildCoderPrompt(
-              config.task,
-              roundsRef.current,
-              {
-                ...(ctx.lastReviewerOutput
-                  ? { reviewerFeedback: ctx.lastReviewerOutput }
-                  : {}),
-                ...(interruptInstruction ? { interruptInstruction } : {}),
-                ...(shouldSkipHistory ? { skipHistory: true } : {}),
-              },
-            ),
-          );
-          if (promptNotification) {
-            addMessage({ role: 'system', content: promptNotification.message, timestamp: Date.now() });
-          }
-          prompt = generatedPrompt;
-          promptSource = promptNotification ? 'context_fallback' : 'god_dynamic';
+          if (!taskAnalysis) throw new Error('No taskAnalysis available');
+          prompt = generateCoderPrompt({
+            taskType: taskAnalysis.taskType as PromptContext['taskType'],
+            round: ctx.round,
+            maxRounds: ctx.maxRounds,
+            taskGoal: config.task,
+            lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
+            unresolvedIssues: lastUnresolvedIssuesRef.current,
+            convergenceLog: convergenceLogRef.current,
+            instruction: interruptInstruction,
+            phaseId: currentPhaseId ?? undefined,
+            phaseType: currentPhaseId
+              ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
+              : undefined,
+            isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
+              || reviewerFeedbackPendingRef.current,
+          }, {
+            sessionDir: sessionIdRef.current
+              ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
+              : path.join(config.projectDir, '.duo', 'sessions'),
+            seq: ++auditSeqRef.current,
+          });
+          promptSource = 'god_dynamic';
         }
 
         if (sessionIdRef.current) {
@@ -985,47 +944,27 @@ function SessionRunner({
           ? reviewerOutputsRef.current[reviewerOutputsRef.current.length - 1]
           : undefined;
 
-        // B.4 + C.2: God dynamic prompt generation with withGodFallbackSync (FR-003, AR-004, AC-2)
+        // Prompt generation — direct call (pure template, no retry needed)
         let prompt: string;
         let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
         if (choiceRouteRef.current?.target === 'reviewer') {
           prompt = choiceRouteRef.current.prompt;
           promptSource = 'choice_route';
         } else {
-          const { result: generatedPrompt, notification: promptNotification } = withGodFallbackSync(
-            watchdogRef.current,
-            () => {
-              if (!taskAnalysis) throw new Error('No taskAnalysis available');
-              return generateReviewerPrompt({
-                taskType: taskAnalysis.taskType,
-                round: ctx.round,
-                maxRounds: ctx.maxRounds,
-                taskGoal: config.task,
-                lastCoderOutput: ctx.lastCoderOutput ?? undefined,
-                instruction: interruptInstruction,
-                phaseId: currentPhaseId ?? undefined,
-                phaseType: currentPhaseId
-                  ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-                  : undefined,
-              });
-            },
-            () => contextManagerRef.current.buildReviewerPrompt(
-              config.task,
-              roundsRef.current,
-              ctx.lastCoderOutput ?? '',
-              {
-                ...(interruptInstruction ? { interruptInstruction } : {}),
-                ...(shouldSkipHistory ? { skipHistory: true } : {}),
-                roundNumber: ctx.round + 1,
-                ...(lastReviewerOut ? { previousReviewerOutput: lastReviewerOut } : {}),
-              },
-            ),
-          );
-          if (promptNotification) {
-            addMessage({ role: 'system', content: promptNotification.message, timestamp: Date.now() });
-          }
-          prompt = generatedPrompt;
-          promptSource = promptNotification ? 'context_fallback' : 'god_dynamic';
+          if (!taskAnalysis) throw new Error('No taskAnalysis available');
+          prompt = generateReviewerPrompt({
+            taskType: taskAnalysis.taskType,
+            round: ctx.round,
+            maxRounds: ctx.maxRounds,
+            taskGoal: config.task,
+            lastCoderOutput: ctx.lastCoderOutput ?? undefined,
+            instruction: interruptInstruction,
+            phaseId: currentPhaseId ?? undefined,
+            phaseType: currentPhaseId
+              ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
+              : undefined,
+          });
+          promptSource = 'god_dynamic';
         }
 
         if (sessionIdRef.current) {

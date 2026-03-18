@@ -100,7 +100,7 @@ export async function initializeTask(
   });
 
   // Single extraction attempt — no internal retry.
-  // Outer withGodFallback (Watchdog-powered) handles retries if needed.
+  // Outer withRetry (Watchdog-powered) handles retries if needed.
   const result = extractGodJson(rawOutput, GodTaskAnalysisSchema);
 
   if (!result || !result.success) {

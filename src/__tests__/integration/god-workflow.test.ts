@@ -2,7 +2,7 @@
  * Card D.1: God 完整工作流端到端集成测试
  *
  * Tests the full God-orchestrated workflow through XState + God modules,
- * verifying all 5 scenarios: normal path, degradation, auto-decision,
+ * verifying 4 scenarios: normal path, degradation,
  * compound phase transition, and duo resume.
  *
  * Uses mock adapters to simulate God/Coder/Reviewer CLI output.
@@ -25,14 +25,14 @@ import {
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
 import type { CLIAdapter, ExecOptions, OutputChunk } from '../../types/adapter.js';
-import type { GodTaskAnalysis, GodPostReviewerDecision, GodAutoDecision } from '../../types/god-schemas.js';
+import type { GodTaskAnalysis, GodPostReviewerDecision } from '../../types/god-schemas.js';
 import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
 import { type ConvergenceLogEntry } from '../../god/god-convergence.js';
-import { makeAutoDecision } from '../../god/auto-decision.js';
 import { DegradationManager, type FallbackServices } from '../../god/degradation-manager.js';
-import { withGodFallback, withGodFallbackSync, type GodRetryController, type GodAvailabilityGuard } from '../../ui/god-fallback.js';
+import { withRetry, isPaused } from '../../ui/god-fallback.js';
+import { WatchdogService } from '../../god/watchdog.js';
 import { evaluatePhaseTransition, type Phase } from '../../god/phase-transition.js';
 import { restoreGodSession } from '../../god/god-session-persistence.js';
 import { ContextManager } from '../../session/context-manager.js';
@@ -306,101 +306,86 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
 // ═══════════════════════════════════════════════════════════════════
 
 describe('Scenario 2: God degradation path (AC-2)', () => {
-  it('TASK_INIT God failure → fallback to CODING directly via TASK_INIT_SKIP', async () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'fix bug' });
-    expect(actor.getSnapshot().value).toBe('TASK_INIT');
+  it('TASK_INIT God failure → paused, falls back to CODING via TASK_INIT_SKIP', async () => {
+    vi.useFakeTimers();
+    try {
+      const actor = startActor();
+      actor.send({ type: 'START_TASK', prompt: 'fix bug' });
+      expect(actor.getSnapshot().value).toBe('TASK_INIT');
 
-    const controller: GodRetryController = {
-      isGodAvailable: () => true,
-      handleGodSuccess: vi.fn(),
-      handleGodFailure: vi.fn().mockResolvedValue({ retry: true }),
-    };
-    const failingAdapter = createFailingAdapter(new Error('God process crashed'));
+      const w = new WatchdogService();
+      const failingAdapter = createFailingAdapter(new Error('God process crashed'));
 
-    const { result, usedGod } = await withGodFallback(
-      controller,
-      async () => {
-        const r = await initializeTask(failingAdapter, 'fix bug', 'sys', tmpDir);
-        if (!r) throw new Error('TASK_INIT returned null');
-        return r;
-      },
-      () => null, // fallback: no task analysis
-    );
+      const promise = withRetry(
+        async () => {
+          const r = await initializeTask(failingAdapter, 'fix bug', 'sys', tmpDir);
+          if (!r) throw new Error('TASK_INIT returned null');
+          return r;
+        },
+        w,
+      );
+      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(20_000);
+      const result = await promise;
 
-    expect(usedGod).toBe(false);
-    expect(result).toBeNull();
+      expect(isPaused(result)).toBe(true);
 
-    // State machine falls back: TASK_INIT_SKIP
-    actor.send({ type: 'TASK_INIT_SKIP' });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    actor.stop();
+      // State machine falls back: TASK_INIT_SKIP
+      actor.send({ type: 'TASK_INIT_SKIP' });
+      expect(actor.getSnapshot().value).toBe('CODING');
+      actor.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('OBSERVING God failure → fallback to v1 ChoiceDetector via MANUAL_FALLBACK', async () => {
-    const controller: GodRetryController = {
-      isGodAvailable: () => true,
-      handleGodSuccess: vi.fn(),
-      handleGodFailure: vi.fn().mockResolvedValue({ retry: true }),
-    };
+  it('OBSERVING God failure → system pauses after retries', async () => {
+    vi.useFakeTimers();
+    try {
+      const w = new WatchdogService();
 
-    const { result, usedGod } = await withGodFallback(
-      controller,
-      async () => { throw new Error('God timeout'); },
-      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'v1 fallback' }, rawOutput: '' }),
-    );
+      const promise = withRetry(
+        async () => { throw new Error('God timeout'); },
+        w,
+      );
+      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(20_000);
+      const result = await promise;
 
-    // After retry-fail cycle, should have fallen back
-    expect(usedGod).toBe(false);
-    expect(result.event.type).toBe('OBSERVATIONS_READY');
+      // After exhausting retries, system pauses
+      expect(isPaused(result)).toBe(true);
+      expect(w.isPaused()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('3 consecutive failures → God disabled for session', async () => {
-    // Track failure count to simulate controller disabling God after 3 failures
-    let failures = 0;
-    let godDisabled = false;
-    const controller: GodRetryController = {
-      isGodAvailable: () => !godDisabled,
-      handleGodSuccess: vi.fn(),
-      handleGodFailure: vi.fn().mockImplementation(async () => {
-        failures++;
-        if (failures >= 3) {
-          godDisabled = true;
-          return { retry: false };
-        }
-        // First failure → retry
-        return { retry: true };
-      }),
-    };
+  it('consecutive failures → God paused for session', async () => {
+    vi.useFakeTimers();
+    try {
+      const w = new WatchdogService();
 
-    // Failure 1 (triggers retry via handleGodFailure) → retry → Failure 2
-    await withGodFallback(
-      controller,
-      async () => { throw new Error('God crash'); },
-      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-    );
-    // After withGodFallback: fail → retry(fail#1) → fail → fail#2 → fallback
+      // Exhaust all retries (3 retries + 1 final failure = paused)
+      const promise = withRetry(
+        async () => { throw new Error('God crash'); },
+        w,
+      );
+      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(20_000);
+      const result = await promise;
 
-    // Failure 3 (triggers disable)
-    await withGodFallback(
-      controller,
-      async () => { throw new Error('God crash'); },
-      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-    );
+      expect(isPaused(result)).toBe(true);
+      expect(w.isGodAvailable()).toBe(false);
 
-    expect(controller.isGodAvailable()).toBe(false);
+      // Subsequent calls with failing fn also return paused immediately
+      const promise2 = withRetry(
+        async () => { throw new Error('still failing'); },
+        w,
+      );
+      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(20_000);
+      const result2 = await promise2;
 
-    // Subsequent calls skip God entirely
-    let godOperationCalled = false;
-    const { usedGod } = await withGodFallback(
-      controller,
-      async () => { godOperationCalled = true; return { event: { type: 'ROUTE_TO_REVIEW' as const }, decision: { action: 'continue_to_review' as const, reasoning: 'OK' }, rawOutput: '' }; },
-      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
-    );
-
-    expect(usedGod).toBe(false);
-    // God operation should NOT have been called
-    expect(godOperationCalled).toBe(false);
+      expect(isPaused(result2)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('full degradation workflow through state machine', async () => {
@@ -428,159 +413,6 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
     expect(actor.getSnapshot().value).toBe('DONE');
 
     actor.stop();
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// Scenario 3: Agent auto-decision in GOD_DECIDING
-// ═══════════════════════════════════════════════════════════════════
-
-describe('Scenario 3: Auto-decision in GOD_DECIDING (AC-3)', () => {
-  it('God auto-decision: continue_with_instruction → DECISION_READY → EXECUTING → CODING', async () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'implement feature' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
-    // CODING → OBSERVING
-    expect(actor.getSnapshot().value).toBe('OBSERVING');
-
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    // God makes auto-decision
-    const godAdapter = createMockAdapter({
-      action: 'continue_with_instruction',
-      reasoning: 'Convergence reached but could improve error handling.',
-      instruction: 'Add error handling to the login function',
-    } satisfies GodAutoDecision);
-
-    const noopRuleEngine = () => ({ blocked: false, results: [] });
-
-    const result = await makeAutoDecision(godAdapter, {
-      round: 1, maxRounds: 5, taskGoal: 'implement feature',
-      sessionDir: sessionDir(), seq: 10, waitingReason: 'converged',
-    }, noopRuleEngine);
-
-    expect(result.decision.action).toBe('continue_with_instruction');
-    expect(result.decision.instruction).toBe('Add error handling to the login function');
-    expect(result.blocked).toBe(false);
-
-    // Execute the decision via new event flow: DECISION_READY → EXECUTING → EXECUTION_COMPLETE
-    const envelope = makeEnvelope([{ type: 'send_to_coder', message: 'Add error handling to the login function' }]);
-    actor.send({ type: 'DECISION_READY', envelope });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
-    expect(actor.getSnapshot().value).toBe('CODING');
-    // Round increments when EXECUTION_COMPLETE routes to CODING
-    expect(actor.getSnapshot().context.round).toBe(1);
-
-    actor.stop();
-  });
-
-  it('God auto-decision: accept → DECISION_READY → EXECUTING → DONE', async () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    const godAdapter = createMockAdapter({
-      action: 'accept',
-      reasoning: 'Task fully completed.',
-    } satisfies GodAutoDecision);
-
-    const result = await makeAutoDecision(godAdapter, {
-      round: 0, maxRounds: 5, taskGoal: 'task',
-      sessionDir: sessionDir(), seq: 5, waitingReason: 'converged',
-    }, () => ({ blocked: false, results: [] }));
-
-    expect(result.decision.action).toBe('accept');
-    expect(result.blocked).toBe(false);
-
-    // Via new flow: DECISION_READY with accept_task action → EXECUTING → DONE
-    const envelopeAccept = makeEnvelope([
-      { type: 'accept_task', rationale: 'reviewer_aligned', summary: 'Task complete' },
-    ]);
-    actor.send({ type: 'DECISION_READY', envelope: envelopeAccept });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
-    expect(actor.getSnapshot().value).toBe('DONE');
-
-    actor.stop();
-  });
-
-  it('God auto-decision: invalid request_human output falls back to autonomous continue', async () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'task' });
-    actor.send({ type: 'TASK_INIT_SKIP' });
-    actor.send({ type: 'CODE_COMPLETE', output: 'done' });
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    const godAdapter = createMockAdapter({
-      action: 'request_human',
-      reasoning: 'Ambiguous requirement, need human input.',
-    });
-
-    const result = await makeAutoDecision(godAdapter, {
-      round: 0, maxRounds: 5, taskGoal: 'task',
-      sessionDir: sessionDir(), seq: 5, waitingReason: 'converged',
-    }, () => ({ blocked: false, results: [] }));
-
-    expect(result.decision.action).toBe('continue_with_instruction');
-    expect(result.reasoning).toContain('Local fallback');
-
-    // State machine remains in GOD_DECIDING until the caller sends DECISION_READY.
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    actor.stop();
-  });
-
-  it('rule engine blocks suspicious continue_with_instruction', async () => {
-    const godAdapter = createMockAdapter({
-      action: 'continue_with_instruction',
-      reasoning: 'Need to run system command.',
-      instruction: 'rm -rf /etc/hosts',
-    } satisfies GodAutoDecision);
-
-    // Rule engine blocks dangerous commands
-    const blockingRuleEngine = () => ({
-      blocked: true,
-      results: [{
-        ruleId: 'R-002',
-        level: 'block' as const,
-        matched: true,
-        description: 'System directory modification blocked',
-      }],
-    });
-
-    const result = await makeAutoDecision(godAdapter, {
-      round: 0, maxRounds: 5, taskGoal: 'task',
-      sessionDir: sessionDir(), seq: 5, waitingReason: 'converged',
-    }, blockingRuleEngine);
-
-    expect(result.blocked).toBe(true);
-    expect(result.decision.action).toBe('continue_with_instruction');
-  });
-
-  it('auto-decision writes audit log (AC-027)', async () => {
-    const godAdapter = createMockAdapter({
-      action: 'accept',
-      reasoning: 'Complete.',
-    } satisfies GodAutoDecision);
-
-    await makeAutoDecision(godAdapter, {
-      round: 1, maxRounds: 5, taskGoal: 'task',
-      sessionDir: sessionDir(), seq: 10, waitingReason: 'converged',
-    }, () => ({ blocked: false, results: [] }));
-
-    expect(godAudit.appendAuditLog).toHaveBeenCalled();
-    const calls = (godAudit.appendAuditLog as ReturnType<typeof vi.fn>).mock.calls;
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall[1].decisionType).toBe('AUTO_DECISION');
   });
 });
 
@@ -939,59 +771,26 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Cross-cutting: withGodFallback integration with real modules
+// Cross-cutting: withRetry integration with real modules
 // ═══════════════════════════════════════════════════════════════════
 
-describe('Cross-cutting: withGodFallback integration', () => {
-  it('God success → usedGod=true, handleGodSuccess called', async () => {
-    const controller: GodRetryController = {
-      isGodAvailable: () => true,
-      handleGodSuccess: vi.fn(),
-      handleGodFailure: vi.fn().mockResolvedValue({ retry: false }),
-    };
+describe('Cross-cutting: withRetry integration', () => {
+  it('God success → result returned, watchdog reset', async () => {
+    const w = new WatchdogService();
 
-    const { result, usedGod } = await withGodFallback(
-      controller,
+    const r = await withRetry(
       async () => ({
         event: { type: 'ROUTE_TO_REVIEW' as const },
         decision: { action: 'continue_to_review' as const, reasoning: 'OK' },
         rawOutput: '',
       }),
-      () => ({ event: { type: 'OBSERVATIONS_READY' as const, observations: [makeObs()] }, decision: { action: 'continue_to_review' as const, reasoning: 'fb' }, rawOutput: '' }),
+      w,
     );
 
-    expect(usedGod).toBe(true);
-    expect(result.event.type).toBe('ROUTE_TO_REVIEW');
-    expect(controller.handleGodSuccess).toHaveBeenCalled();
-  });
-
-  it('withGodFallbackSync for prompt generation fallback', () => {
-    const guard: GodAvailabilityGuard = {
-      isGodAvailable: () => true,
-    };
-
-    const { result, usedGod } = withGodFallbackSync(
-      guard,
-      () => 'God-generated prompt: Focus on error handling.',
-      () => 'V1 prompt: Please review the code.',
-    );
-
-    expect(usedGod).toBe(true);
-    expect(result).toBe('God-generated prompt: Focus on error handling.');
-  });
-
-  it('withGodFallbackSync catches throw and falls back', () => {
-    const guard: GodAvailabilityGuard = {
-      isGodAvailable: () => true,
-    };
-
-    const { result, usedGod } = withGodFallbackSync(
-      guard,
-      () => { throw new Error('prompt gen failed'); },
-      () => 'V1 fallback prompt',
-    );
-
-    expect(usedGod).toBe(false);
-    expect(result).toBe('V1 fallback prompt');
+    expect(isPaused(r)).toBe(false);
+    if (!isPaused(r)) {
+      expect(r.result.event.type).toBe('ROUTE_TO_REVIEW');
+    }
+    expect(w.getConsecutiveFailures()).toBe(0);
   });
 });

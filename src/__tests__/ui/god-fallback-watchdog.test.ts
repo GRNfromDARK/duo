@@ -1,190 +1,116 @@
 /**
- * Tests for the new withGodFallback / withGodFallbackSync — Watchdog-powered.
- * Replaces DegradationManager with GodRetryController / GodAvailabilityGuard.
+ * Tests for withRetry integration with WatchdogService.
+ * Validates retry + backoff + pause behavior end-to-end.
  */
 
-import { describe, test, expect, vi } from 'vitest';
-import {
-  withGodFallback,
-  withGodFallbackSync,
-  type GodRetryController,
-  type GodAvailabilityGuard,
-} from '../../ui/god-fallback.js';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { withRetry, isPaused } from '../../ui/god-fallback.js';
+import { WatchdogService } from '../../god/watchdog.js';
 
-// ── Helper: build a mock GodRetryController ──
-
-function makeController(overrides?: Partial<GodRetryController>): GodRetryController {
-  return {
-    isGodAvailable: () => true,
-    handleGodSuccess: vi.fn(),
-    handleGodFailure: vi.fn().mockResolvedValue({ retry: true }),
-    ...overrides,
-  };
-}
-
-function makeGuard(available = true): GodAvailabilityGuard {
-  return { isGodAvailable: () => available };
-}
-
-// ── withGodFallback (async) ──
-
-describe('withGodFallback (Watchdog-powered)', () => {
-  test('returns God result when call succeeds', async () => {
-    const ctrl = makeController();
-    const godCall = vi.fn().mockResolvedValue('god-result');
-    const fallbackCall = vi.fn().mockReturnValue('v1-result');
-
-    const { result, usedGod } = await withGodFallback(ctrl, godCall, fallbackCall);
-
-    expect(result).toBe('god-result');
-    expect(usedGod).toBe(true);
-    expect(fallbackCall).not.toHaveBeenCalled();
-    expect(ctrl.handleGodSuccess).toHaveBeenCalledOnce();
-  });
-
-  test('returns fallback when God is disabled', async () => {
-    const ctrl = makeController({ isGodAvailable: () => false });
-    const godCall = vi.fn().mockResolvedValue('god-result');
-    const fallbackCall = vi.fn().mockReturnValue('v1-result');
-
-    const { result, usedGod } = await withGodFallback(ctrl, godCall, fallbackCall);
-
-    expect(result).toBe('v1-result');
-    expect(usedGod).toBe(false);
-    expect(godCall).not.toHaveBeenCalled();
-  });
-
-  test('retries once when handleGodFailure returns retry=true, retry succeeds', async () => {
-    const ctrl = makeController({
-      handleGodFailure: vi.fn().mockResolvedValue({
-        retry: true,
-        notification: { type: 'retrying', message: '◈ Watchdog retrying...' },
-      }),
-    });
-    let callCount = 0;
-    const godCall = vi.fn().mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.reject(new Error('crash'));
-      return Promise.resolve('retry-ok');
-    });
-    const fallbackCall = vi.fn().mockReturnValue('v1');
-
-    const { result, usedGod, notification } = await withGodFallback(ctrl, godCall, fallbackCall);
-
-    expect(result).toBe('retry-ok');
-    expect(usedGod).toBe(true);
-    expect(godCall).toHaveBeenCalledTimes(2);
-    expect(ctrl.handleGodSuccess).toHaveBeenCalledOnce();
-    expect(notification?.type).toBe('retrying');
-  });
-
-  test('falls back when handleGodFailure returns retry=true but retry also fails', async () => {
-    const ctrl = makeController({
-      handleGodFailure: vi.fn().mockResolvedValue({
-        retry: true,
-        notification: { type: 'retrying', message: 'retrying' },
-      }),
-    });
-    const godCall = vi.fn().mockRejectedValue(new Error('always fails'));
-    const fallbackCall = vi.fn().mockReturnValue('v1-result');
-
-    const { result, usedGod } = await withGodFallback(ctrl, godCall, fallbackCall);
-
-    expect(result).toBe('v1-result');
-    expect(usedGod).toBe(false);
-    expect(godCall).toHaveBeenCalledTimes(2);
-    // handleGodFailure called twice (original + retry failure)
-    expect(ctrl.handleGodFailure).toHaveBeenCalledTimes(2);
-  });
-
-  test('falls back immediately when handleGodFailure returns retry=false', async () => {
-    const ctrl = makeController({
-      handleGodFailure: vi.fn().mockResolvedValue({
-        retry: false,
-        notification: { type: 'fallback_activated', message: 'escalated' },
-      }),
-    });
-    const godCall = vi.fn().mockRejectedValue(new Error('fail'));
-    const fallbackCall = vi.fn().mockReturnValue('v1');
-
-    const { result, usedGod, notification } = await withGodFallback(ctrl, godCall, fallbackCall);
-
-    expect(result).toBe('v1');
-    expect(usedGod).toBe(false);
-    expect(godCall).toHaveBeenCalledTimes(1); // No retry
-    expect(notification?.type).toBe('fallback_activated');
-  });
-
-  test('passes error kind and message to handleGodFailure', async () => {
-    const handleGodFailure = vi.fn().mockResolvedValue({ retry: false });
-    const ctrl = makeController({ handleGodFailure });
-    const godCall = vi.fn().mockRejectedValue(new Error('something broke'));
-    const fallbackCall = vi.fn().mockReturnValue('v1');
-
-    await withGodFallback(ctrl, godCall, fallbackCall);
-
-    expect(handleGodFailure).toHaveBeenCalledWith({
-      kind: 'process_exit',
-      message: 'something broke',
-    });
-  });
-
-  test('notification from retry failure is returned', async () => {
-    let callCount = 0;
-    const ctrl = makeController({
-      handleGodFailure: vi.fn().mockImplementation(async () => {
-        callCount++;
-        if (callCount === 1) return { retry: true, notification: { type: 'retrying', message: 'first' } };
-        return { retry: false, notification: { type: 'fallback_activated', message: 'second' } };
-      }),
-    });
-    const godCall = vi.fn().mockRejectedValue(new Error('fail'));
-    const fallbackCall = vi.fn().mockReturnValue('v1');
-
-    const { notification } = await withGodFallback(ctrl, godCall, fallbackCall);
-
-    // The last notification (from retry failure) is returned
-    expect(notification?.type).toBe('fallback_activated');
-  });
+beforeEach(() => {
+  vi.useFakeTimers();
 });
 
-// ── withGodFallbackSync ──
+afterEach(() => {
+  vi.useRealTimers();
+});
 
-describe('withGodFallbackSync (Watchdog-powered)', () => {
-  test('returns God result when call succeeds', () => {
-    const guard = makeGuard(true);
-    const godCall = vi.fn().mockReturnValue('god-prompt');
-    const fallbackCall = vi.fn().mockReturnValue('v1-prompt');
+async function runWithRetry<T>(
+  fn: () => Promise<T>,
+  watchdog: WatchdogService,
+) {
+  const promise = withRetry(fn, watchdog);
+  for (let i = 0; i < 10; i++) {
+    await vi.advanceTimersByTimeAsync(20_000);
+  }
+  return promise;
+}
 
-    const { result, usedGod } = withGodFallbackSync(guard, godCall, fallbackCall);
+describe('withRetry + WatchdogService integration', () => {
+  test('returns result when God call succeeds on first try', async () => {
+    const w = new WatchdogService();
+    const r = await runWithRetry(async () => 'god-result', w);
 
-    expect(result).toBe('god-prompt');
-    expect(usedGod).toBe(true);
-    expect(fallbackCall).not.toHaveBeenCalled();
+    expect(isPaused(r)).toBe(false);
+    if (!isPaused(r)) {
+      expect(r.result).toBe('god-result');
+      expect(r.retryCount).toBe(0);
+    }
+    expect(w.getConsecutiveFailures()).toBe(0);
   });
 
-  test('falls back when God is disabled', () => {
-    const guard = makeGuard(false);
-    const godCall = vi.fn().mockReturnValue('god');
-    const fallbackCall = vi.fn().mockReturnValue('v1');
+  test('retries and succeeds after transient failures', async () => {
+    const w = new WatchdogService();
+    let calls = 0;
+    const r = await runWithRetry(async () => {
+      calls++;
+      if (calls === 1) throw new Error('crash');
+      return 'retry-ok';
+    }, w);
 
-    const { result, usedGod } = withGodFallbackSync(guard, godCall, fallbackCall);
-
-    expect(result).toBe('v1');
-    expect(usedGod).toBe(false);
-    expect(godCall).not.toHaveBeenCalled();
+    expect(isPaused(r)).toBe(false);
+    if (!isPaused(r)) {
+      expect(r.result).toBe('retry-ok');
+      expect(r.retryCount).toBe(1);
+    }
+    // handleSuccess resets consecutive failures
+    expect(w.getConsecutiveFailures()).toBe(0);
   });
 
-  test('falls back when God call throws', () => {
-    const guard = makeGuard(true);
-    const godCall = vi.fn().mockImplementation(() => { throw new Error('boom'); });
-    const fallbackCall = vi.fn().mockReturnValue('v1-prompt');
+  test('pauses after exhausting all retries', async () => {
+    const w = new WatchdogService();
+    const r = await runWithRetry(async () => { throw new Error('always fails'); }, w);
 
-    const { result, usedGod, notification } = withGodFallbackSync(guard, godCall, fallbackCall);
+    expect(isPaused(r)).toBe(true);
+    expect(w.isPaused()).toBe(true);
+    expect(w.isGodAvailable()).toBe(false);
+  });
 
-    expect(result).toBe('v1-prompt');
-    expect(usedGod).toBe(false);
-    expect(notification).toBeDefined();
-    expect(notification!.message).toContain('boom');
+  test('paused watchdog: fn that throws returns paused immediately', async () => {
+    const w = new WatchdogService();
+
+    // Exhaust retries
+    await runWithRetry(async () => { throw new Error('fail'); }, w);
+    expect(w.isPaused()).toBe(true);
+
+    // Second call with a failing fn returns paused immediately
+    const r2 = await runWithRetry(async () => { throw new Error('still failing'); }, w);
+    expect(isPaused(r2)).toBe(true);
+  });
+
+  test('paused watchdog: fn that succeeds returns success and resets', async () => {
+    const w = new WatchdogService();
+
+    // Exhaust retries
+    await runWithRetry(async () => { throw new Error('fail'); }, w);
+    expect(w.isPaused()).toBe(true);
+
+    // If fn succeeds despite watchdog being paused, return success
+    // (the system recovered on its own)
+    const r2 = await runWithRetry(async () => 'recovered', w);
+    expect(isPaused(r2)).toBe(false);
+    if (!isPaused(r2)) {
+      expect(r2.result).toBe('recovered');
+    }
+    expect(w.isPaused()).toBe(false);
+  });
+
+  test('reset allows retry after pause', async () => {
+    const w = new WatchdogService();
+
+    // Exhaust retries
+    await runWithRetry(async () => { throw new Error('fail'); }, w);
+    expect(w.isPaused()).toBe(true);
+
+    // Reset
+    w.reset();
+    expect(w.isPaused()).toBe(false);
+
+    // Now can succeed
+    const r = await runWithRetry(async () => 'recovered', w);
+    expect(isPaused(r)).toBe(false);
+    if (!isPaused(r)) {
+      expect(r.result).toBe('recovered');
+    }
   });
 });
