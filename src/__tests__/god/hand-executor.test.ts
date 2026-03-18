@@ -48,7 +48,6 @@ function createContext(overrides: Partial<HandExecutionContext> = {}): HandExecu
       ['god', 'claude-code'],
     ]),
     auditLogger: new GodAuditLogger(tmpDir),
-    round: 1,
     sessionDir: tmpDir,
     cwd: tmpDir,
     ...overrides,
@@ -257,7 +256,7 @@ describe('HandExecutor', () => {
         expect(obs.source).toBe('runtime');
         expect(obs.type).toBe('phase_progress_signal');
         expect(obs.timestamp).toBeDefined();
-        expect(obs.round).toBe(ctx.round);
+        // round field removed from observations
       }
     });
 
@@ -536,7 +535,6 @@ describe('HandExecutor', () => {
           ['reviewer', 'claude-code'],
         ]),
         auditLogger: null,
-        round: 1,
         sessionDir: '/tmp/test-null-logger',
         cwd: '/tmp/test-null-logger',
         ...overrides,

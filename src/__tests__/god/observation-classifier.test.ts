@@ -16,7 +16,7 @@ import type { Observation, ObservationType } from '../../types/observation.js';
 
 // ── Helper ──
 
-const meta = { round: 1, phaseId: 'phase-1', adapter: 'claude-code' };
+const meta = { phaseId: 'phase-1', adapter: 'claude-code' };
 
 // ── classifyOutput ──
 
@@ -186,18 +186,13 @@ The function at line 42 does not validate input.
 
   // --- meta fields ---
 
-  it('carries round from meta', () => {
-    const obs = classifyOutput('some output', 'coder', { round: 5 });
-    expect(obs.round).toBe(5);
-  });
-
   it('carries phaseId from meta', () => {
-    const obs = classifyOutput('some output', 'coder', { round: 1, phaseId: 'phase-2' });
+    const obs = classifyOutput('some output', 'coder', { phaseId: 'phase-2' });
     expect(obs.phaseId).toBe('phase-2');
   });
 
   it('carries adapter from meta', () => {
-    const obs = classifyOutput('some output', 'coder', { round: 1, adapter: 'codex' });
+    const obs = classifyOutput('some output', 'coder', { adapter: 'codex' });
     expect(obs.adapter).toBe('codex');
   });
 
@@ -292,19 +287,17 @@ The function at line 42 does not validate input.
 describe('createObservation', () => {
   it('creates a valid Observation with required fields', () => {
     const obs = createObservation('work_output', 'coder', 'Coder produced output', {
-      round: 1,
     });
     expect(obs.type).toBe('work_output');
     expect(obs.source).toBe('coder');
     expect(obs.summary).toBe('Coder produced output');
-    expect(obs.round).toBe(1);
     expect(obs.timestamp).toBeDefined();
     expect(() => ObservationSchema.parse(obs)).not.toThrow();
   });
 
   it('auto-fills timestamp as ISO string', () => {
     const before = new Date().toISOString();
-    const obs = createObservation('work_output', 'coder', 'test', { round: 0 });
+    const obs = createObservation('work_output', 'coder', 'test', {});
     const after = new Date().toISOString();
     expect(obs.timestamp >= before).toBe(true);
     expect(obs.timestamp <= after).toBe(true);
@@ -312,7 +305,6 @@ describe('createObservation', () => {
 
   it('accepts optional rawRef', () => {
     const obs = createObservation('work_output', 'coder', 'test', {
-      round: 1,
       rawRef: '/path/to/log',
     });
     expect(obs.rawRef).toBe('/path/to/log');
@@ -320,7 +312,6 @@ describe('createObservation', () => {
 
   it('accepts optional phaseId', () => {
     const obs = createObservation('work_output', 'coder', 'test', {
-      round: 1,
       phaseId: 'phase-2',
     });
     expect(obs.phaseId).toBe('phase-2');
@@ -328,7 +319,6 @@ describe('createObservation', () => {
 
   it('accepts optional adapter', () => {
     const obs = createObservation('work_output', 'coder', 'test', {
-      round: 1,
       adapter: 'claude-code',
     });
     expect(obs.adapter).toBe('claude-code');
@@ -336,7 +326,6 @@ describe('createObservation', () => {
 
   it('accepts optional severity override', () => {
     const obs = createObservation('quota_exhausted', 'runtime', 'quota hit', {
-      round: 1,
       severity: 'fatal',
     });
     expect(obs.severity).toBe('fatal');
@@ -344,7 +333,6 @@ describe('createObservation', () => {
 
   it('defaults severity to error', () => {
     const obs = createObservation('quota_exhausted', 'runtime', 'quota hit', {
-      round: 1,
     });
     expect(obs.severity).toBe('error');
   });
@@ -359,7 +347,6 @@ describe('guardNonWorkOutput', () => {
     summary: 'test',
     severity: 'error',
     timestamp: new Date().toISOString(),
-    round: 1,
   });
 
   // --- Work observations ---
@@ -466,7 +453,6 @@ describe('deduplicateObservations', () => {
       source: 'coder',
       summary: 'First output',
       severity: 'info',
-      round: 1,
       timestamp: '2026-03-17T00:00:01.000Z',
     };
     const obs2: Observation = {
@@ -474,7 +460,6 @@ describe('deduplicateObservations', () => {
       source: 'reviewer',
       summary: 'Review result',
       severity: 'info',
-      round: 1,
       timestamp: '2026-03-17T00:00:02.000Z',
     };
     // Duplicate of obs1 (same timestamp+source+type)
@@ -483,7 +468,6 @@ describe('deduplicateObservations', () => {
       source: 'coder',
       summary: 'First output',
       severity: 'info',
-      round: 1,
       timestamp: '2026-03-17T00:00:01.000Z',
     };
 
@@ -495,11 +479,10 @@ describe('deduplicateObservations', () => {
 
   it('preserves order of first occurrence', () => {
     const clarification: Observation = {
-      type: 'human_input',
+      type: 'human_message',
       source: 'human',
       summary: 'User answered question',
       severity: 'info',
-      round: 1,
       timestamp: '2026-03-17T00:00:01.000Z',
     };
     const current: Observation = {
@@ -507,7 +490,6 @@ describe('deduplicateObservations', () => {
       source: 'coder',
       summary: 'Coder output',
       severity: 'info',
-      round: 2,
       timestamp: '2026-03-17T00:00:02.000Z',
     };
 

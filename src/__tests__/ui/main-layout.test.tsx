@@ -223,7 +223,6 @@ describe('MainLayout', () => {
         columns={80}
         rows={24}
         contextData={{
-          roundNumber: 1,
           coderName: 'claude-code',
           reviewerName: 'codex',
           taskSummary: 'Fix the login bug',

@@ -40,7 +40,7 @@ describe('handleResumeList', () => {
   test('lists sessions with project, task, round, status, time', () => {
     const mgr = new SessionManager(sessionsDir);
     const s1 = mgr.createSession(makeConfig({ task: 'fix auth bug' }));
-    mgr.saveState(s1.id, { round: 3, status: 'reviewing', currentRole: 'reviewer' });
+    mgr.saveState(s1.id, { status: 'reviewing', currentRole: 'reviewer' });
 
     const output: string[] = [];
     const result = handleResumeList(sessionsDir, (msg: string) => output.push(msg));
@@ -65,7 +65,7 @@ describe('handleResumeList', () => {
     const s1 = mgr.createSession(makeConfig({ task: 'task A' }));
     const s2 = mgr.createSession(makeConfig({ task: 'task B' }));
     // Update s1 to make it most recent (saveState updates updatedAt)
-    mgr.saveState(s1.id, { round: 5, status: 'coding', currentRole: 'coder' });
+    mgr.saveState(s1.id, { status: 'coding', currentRole: 'coder' });
 
     const output: string[] = [];
     const result = handleResumeList(sessionsDir, (msg: string) => output.push(msg));
@@ -82,15 +82,14 @@ describe('handleResume', () => {
   test('resumes a valid session and returns loaded data', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
-    mgr.saveState(session.id, { round: 2, status: 'coding', currentRole: 'coder' });
-    mgr.addHistoryEntry(session.id, { round: 1, role: 'coder', content: 'v1', timestamp: 1000 });
+    mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
+    mgr.addHistoryEntry(session.id, { role: 'coder', content: 'v1', timestamp: 1000 });
 
     const output: string[] = [];
     const result = handleResume(session.id, sessionsDir, (msg: string) => output.push(msg));
 
     expect(result.success).toBe(true);
     expect(result.session?.metadata.task).toBe('implement login');
-    expect(result.session?.state.round).toBe(2);
     expect(result.session?.history).toHaveLength(1);
   });
 

@@ -30,8 +30,6 @@ describe('BUG-25: code phase prompt requires writing tests for new functionality
   it('code-type prompt contains test-writing requirement', () => {
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 10,
       taskGoal: 'Implement model selection feature',
       isPostReviewerRouting: true,
     });
@@ -43,8 +41,6 @@ describe('BUG-25: code phase prompt requires writing tests for new functionality
   it('compound code phase prompt also contains test-writing requirement', () => {
     const prompt = generateCoderPrompt({
       taskType: 'compound',
-      round: 1,
-      maxRounds: 10,
       taskGoal: 'Implement model selection feature',
       phaseType: 'code',
       phaseId: 'phase-3',
@@ -57,8 +53,6 @@ describe('BUG-25: code phase prompt requires writing tests for new functionality
   it('explore-type prompt does NOT require writing tests', () => {
     const prompt = generateCoderPrompt({
       taskType: 'explore',
-      round: 0,
-      maxRounds: 10,
       taskGoal: 'Explore codebase',
     });
 

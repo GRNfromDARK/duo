@@ -33,7 +33,6 @@ function makeObservation(overrides: Partial<Observation> = {}): Observation {
     summary: 'Coder produced output',
     severity: 'info',
     timestamp: new Date().toISOString(),
-    round: 1,
     ...overrides,
   };
 }
@@ -79,7 +78,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     const envelope = makeEnvelope();
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations,
       envelope,
       executionResults: [],
@@ -108,7 +106,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 2,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -135,7 +132,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -159,7 +155,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -183,7 +178,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -205,7 +199,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     ];
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope: makeEnvelope(),
       executionResults: execResults,
@@ -233,7 +226,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 3,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -270,7 +262,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 4,
       observations: [reviewerObs],
       envelope,
       executionResults: [],
@@ -296,7 +287,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -319,7 +309,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 2,
       observations: [makeObservation({ type: 'quota_exhausted', severity: 'error' })],
       envelope,
       executionResults: [makeObservation({ source: 'runtime', type: 'phase_progress_signal', summary: 'switch_adapter: coder → gemini-2.5-pro' })],
@@ -342,7 +331,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 3,
       observations: [makeObservation({ type: 'quota_exhausted', severity: 'error' })],
       envelope,
       executionResults: [],
@@ -362,7 +350,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 2,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -390,7 +377,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 5,
       observations: [makeObservation({ source: 'reviewer', type: 'review_output', summary: '[APPROVED] looks good' })],
       envelope,
       executionResults: [],
@@ -420,7 +406,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 10,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -440,7 +425,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     const logger = new GodAuditLogger(tmpDir);
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope: makeEnvelope(),
       executionResults: [],
@@ -452,7 +436,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     // Original fields must be present
     expect(entry.seq).toBe(1);
     expect(entry.timestamp).toBeDefined();
-    expect(entry.round).toBe(1);
     expect(entry.decisionType).toBeDefined();
     expect(entry.inputSummary).toBeDefined();
     expect(entry.outputSummary).toBeDefined();
@@ -465,7 +448,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     // Old-style append
     logger.append({
       timestamp: new Date().toISOString(),
-      round: 1,
       decisionType: 'post_coder',
       inputSummary: 'legacy input',
       outputSummary: 'legacy output',
@@ -474,7 +456,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
 
     // New-style logEnvelopeDecision
     logEnvelopeDecision(logger, {
-      round: 2,
       observations: [makeObservation()],
       envelope: makeEnvelope(),
       executionResults: [],
@@ -493,7 +474,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     const shortStr = 'x'.repeat(600);
     logger.append({
       timestamp: new Date().toISOString(),
-      round: 1,
       decisionType: 'test',
       inputSummary: shortStr,
       outputSummary: shortStr,
@@ -510,7 +490,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     const longStr = 'x'.repeat(3000);
     logger.append({
       timestamp: new Date().toISOString(),
-      round: 1,
       decisionType: 'test',
       inputSummary: longStr,
       outputSummary: longStr,
@@ -533,7 +512,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
 
     logger.append({
       timestamp: new Date().toISOString(),
-      round: 1,
       decisionType: 'test',
       inputSummary: input,
       outputSummary: input,
@@ -564,7 +542,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -593,7 +570,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     ];
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations,
       envelope: makeEnvelope(),
       executionResults: [],
@@ -616,7 +592,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],
@@ -641,7 +616,6 @@ describe('Card F.2: logEnvelopeDecision — enhanced audit logging', () => {
     });
 
     logEnvelopeDecision(logger, {
-      round: 1,
       observations: [makeObservation()],
       envelope,
       executionResults: [],

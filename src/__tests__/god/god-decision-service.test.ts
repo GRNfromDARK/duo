@@ -93,7 +93,6 @@ function makeObservation(overrides: Partial<Observation> = {}): Observation {
     summary: 'Coder completed implementation',
     severity: 'info',
     timestamp: new Date().toISOString(),
-    round: 1,
     ...overrides,
   };
 }
@@ -102,8 +101,6 @@ function makeContext(overrides: Partial<GodDecisionContext> = {}): GodDecisionCo
   return {
     taskGoal: 'Implement feature X',
     currentPhaseId: 'phase-1',
-    round: 1,
-    maxRounds: 10,
     previousDecisions: [],
     availableAdapters: ['claude-code', 'codex'],
     activeRole: 'coder',
@@ -370,8 +367,6 @@ describe('GodDecisionService', () => {
         sessionDir,
         taskGoal: 'Fix authentication bug',
         currentPhaseId: 'debug-phase',
-        round: 3,
-        maxRounds: 8,
       });
 
       await service.makeDecision(observations, context);

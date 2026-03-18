@@ -56,7 +56,7 @@ describe('filterMessages', () => {
   it('in minimal mode, keeps round summary messages', () => {
     const messages: Message[] = [
       makeMessage({ id: '1', content: 'Code output' }),
-      makeMessage({ id: '2', role: 'system', content: '═══ Round 1→2 ═══', metadata: { isRoundSummary: true } }),
+      makeMessage({ id: '2', role: 'system', content: '═══ Phase transition ═══', metadata: {} }),
       makeMessage({ id: '3', content: 'Review output' }),
     ];
     const filtered = filterMessages(messages, 'minimal');

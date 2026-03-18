@@ -36,7 +36,7 @@ function startActor(context?: Partial<WorkflowContext>) {
 }
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = [], messages: GodDecisionEnvelope['messages'] = []): GodDecisionEnvelope {
@@ -68,7 +68,6 @@ function createHandContext(overrides: Partial<HandExecutionContext> = {}): HandE
       ['reviewer', 'claude-code'],
     ]),
     auditLogger: new GodAuditLogger(tmpDir),
-    round: 1,
     sessionDir: tmpDir,
     cwd: tmpDir,
     ...overrides,
@@ -88,7 +87,6 @@ describe('BUG-11 regression: pendingReviewerMessage propagation', () => {
         pendingReviewerMessage: null,
         displayToUser: vi.fn(),
         auditLogger: new GodAuditLogger(tmpDir),
-        round: 1,
       };
 
       const result = dispatchMessages(
@@ -107,7 +105,6 @@ describe('BUG-11 regression: pendingReviewerMessage propagation', () => {
         pendingReviewerMessage: null,
         displayToUser: vi.fn(),
         auditLogger: new GodAuditLogger(tmpDir),
-        round: 1,
       };
 
       const result = dispatchMessages(

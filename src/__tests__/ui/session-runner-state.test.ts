@@ -158,14 +158,13 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 1,
           status: 'reviewing',
           currentRole: 'reviewer',
         },
         history: [
-          { round: 0, role: 'coder', content: 'coder round 1', timestamp: 10 },
-          { round: 0, role: 'reviewer', content: 'review round 1', timestamp: 20 },
-          { round: 1, role: 'coder', content: 'coder round 2', timestamp: 30 },
+          { role: 'coder', content: 'coder round 1', timestamp: 10 },
+          { role: 'reviewer', content: 'review round 1', timestamp: 20 },
+          { role: 'coder', content: 'coder round 2', timestamp: 30 },
         ],
       };
 
@@ -179,22 +178,11 @@ describe('session-runner-state', () => {
 
       expect(runtime.restoreEvent).toBe('RESTORED_TO_REVIEWING');
       expect(runtime.workflowInput).toMatchObject({
-        round: 1,
         sessionId: 'session-123',
         lastCoderOutput: 'coder round 2',
         lastReviewerOutput: 'review round 1',
       });
       expect(runtime.messages).toHaveLength(3);
-      expect(runtime.rounds).toHaveLength(2);
-      expect(runtime.rounds[0]).toMatchObject({
-        index: 1,
-        coderOutput: 'coder round 1',
-        reviewerOutput: 'review round 1',
-      });
-      expect(runtime.rounds[1]).toMatchObject({
-        index: 2,
-        coderOutput: 'coder round 2',
-      });
       expect(runtime.reviewerOutputs).toEqual(['review round 1']);
       expect(runtime.tokenCount).toBeGreaterThan(0);
     });
@@ -211,14 +199,13 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 2,
           status: 'coding',
           currentRole: 'coder',
           coderSessionId: 'ses_abc',
           reviewerSessionId: 'th_xyz',
         },
         history: [
-          { round: 0, role: 'coder', content: 'code', timestamp: 10 },
+          { role: 'coder', content: 'code', timestamp: 10 },
         ],
       };
 
@@ -246,7 +233,6 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 0,
           status: 'coding',
           currentRole: 'coder',
         },
@@ -271,17 +257,6 @@ describe('session-runner-state', () => {
         reasoning: 'User wants to fix a bug',
         confidence: 0.9,
       };
-      const godConvergenceLog = [
-        {
-          round: 0,
-          timestamp: '2026-03-12T00:00:00Z',
-          classification: 'improving',
-          shouldTerminate: false,
-          blockingIssueCount: 2,
-          criteriaProgress: [],
-          summary: 'round 0',
-        },
-      ];
       const loaded: LoadedSession = {
         metadata: {
           id: 'session-god-1',
@@ -294,16 +269,14 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 1,
           status: 'coding',
           currentRole: 'coder',
           godSessionId: 'god_ses_123',
           godAdapter: 'codex',
           godTaskAnalysis,
-          godConvergenceLog,
         },
         history: [
-          { round: 0, role: 'coder', content: 'code', timestamp: 10 },
+          { role: 'coder', content: 'code', timestamp: 10 },
         ],
       };
 
@@ -317,7 +290,7 @@ describe('session-runner-state', () => {
 
       expect(runtime.godSessionId).toBe('god_ses_123');
       expect(runtime.godTaskAnalysis).toEqual(godTaskAnalysis);
-      expect(runtime.godConvergenceLog).toEqual(godConvergenceLog);
+      // godConvergenceLog assertion removed (round removal).
     });
 
     it('passes through currentPhaseId from persisted state (BUG-6 regression)', () => {
@@ -333,13 +306,12 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 2,
           status: 'waiting_user',
           currentRole: 'coder',
           currentPhaseId: 'phase-implementation',
         },
         history: [
-          { round: 0, role: 'coder', content: 'code', timestamp: 10 },
+          { role: 'coder', content: 'code', timestamp: 10 },
         ],
       };
 
@@ -366,7 +338,6 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 0,
           status: 'coding',
           currentRole: 'coder',
         },
@@ -396,12 +367,11 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 2,
           status: 'clarifying',
           currentRole: 'coder',
         },
         history: [
-          { round: 0, role: 'coder', content: 'code', timestamp: 10 },
+          { role: 'coder', content: 'code', timestamp: 10 },
         ],
       };
 
@@ -428,7 +398,6 @@ describe('session-runner-state', () => {
           updatedAt: 2,
         },
         state: {
-          round: 0,
           status: 'coding',
           currentRole: 'coder',
         },
@@ -445,7 +414,7 @@ describe('session-runner-state', () => {
 
       expect(runtime.godSessionId).toBeUndefined();
       expect(runtime.godTaskAnalysis).toBeUndefined();
-      expect(runtime.godConvergenceLog).toBeUndefined();
+      // godConvergenceLog assertion removed (round removal).
     });
   });
 });

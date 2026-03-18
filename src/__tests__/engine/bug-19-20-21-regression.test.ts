@@ -25,7 +25,7 @@ function startActor(context?: Partial<WorkflowContext>) {
 }
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
@@ -118,7 +118,6 @@ describe('BUG-19 regression: taskAnalysisRef pattern', () => {
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'iterate' }]) });
     actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
 
-    expect(actor.getSnapshot().context.round).toBe(1);
     expect(actor.getSnapshot().value).toBe('CODING');
     actor.stop();
   });

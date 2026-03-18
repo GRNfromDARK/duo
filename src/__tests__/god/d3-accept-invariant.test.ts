@@ -48,7 +48,6 @@ function createContext(overrides: Partial<HandExecutionContext> = {}): HandExecu
       ['god', 'claude-code'],
     ]),
     auditLogger: new GodAuditLogger(tmpDir),
-    round: 1,
     sessionDir: tmpDir,
     cwd: tmpDir,
     ...overrides,
@@ -276,7 +275,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-2',
       });
 
@@ -292,7 +290,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       const actions: GodAction[] = [];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -309,7 +306,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-2',
       });
 
@@ -325,7 +321,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-2',
       });
 
@@ -344,7 +339,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -360,7 +354,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       const actions: GodAction[] = [];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -376,7 +369,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -395,7 +387,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -410,7 +401,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       const actions: GodAction[] = [];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -426,7 +416,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -446,7 +435,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       ];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -455,7 +443,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
 
     it('empty messages → no violations', () => {
       const violations = checkNLInvariantViolations([], [], {
-        round: 1,
         phaseId: 'phase-1',
       });
 
@@ -469,7 +456,6 @@ describe('Card D.3 Task 2: Runtime Invariant Checks', () => {
       const actions: GodAction[] = [];
 
       const violations = checkNLInvariantViolations(messages, actions, {
-        round: 1,
         phaseId: 'phase-1',
       });
 

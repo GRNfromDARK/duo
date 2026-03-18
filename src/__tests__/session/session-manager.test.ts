@@ -63,7 +63,6 @@ describe('SessionManager — state persistence', () => {
     expect(snapshot.metadata.coder).toBe(config.coder);
     expect(snapshot.metadata.reviewer).toBe(config.reviewer);
     expect(snapshot.metadata.task).toBe(config.task);
-    expect(snapshot.state.round).toBe(0);
     expect(snapshot.state.status).toBe('created');
   });
 
@@ -71,28 +70,26 @@ describe('SessionManager — state persistence', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
 
-    mgr.saveState(session.id, { round: 2, status: 'reviewing', currentRole: 'reviewer' });
+    mgr.saveState(session.id, { status: 'reviewing', currentRole: 'reviewer' });
 
     const sessionDir = path.join(sessionsDir, session.id);
     const snapshot = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
-    expect(snapshot.state.round).toBe(2);
     expect(snapshot.state.status).toBe('reviewing');
 
     // Legacy files also updated
     const state = JSON.parse(fs.readFileSync(path.join(sessionDir, 'state.json'), 'utf-8'));
-    expect(state.round).toBe(2);
+    expect(state.status).toBe('reviewing');
   });
 
   test('saveState overwrites previous state', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
 
-    mgr.saveState(session.id, { round: 1, status: 'coding', currentRole: 'coder' });
-    mgr.saveState(session.id, { round: 2, status: 'reviewing', currentRole: 'reviewer' });
+    mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
+    mgr.saveState(session.id, { status: 'reviewing', currentRole: 'reviewer' });
 
     const sessionDir = path.join(sessionsDir, session.id);
     const snapshot = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
-    expect(snapshot.state.round).toBe(2);
     expect(snapshot.state.status).toBe('reviewing');
   });
 });
@@ -105,7 +102,6 @@ describe('SessionManager — history persistence', () => {
     const session = mgr.createSession(makeConfig());
 
     mgr.addHistoryEntry(session.id, {
-      round: 1,
       role: 'coder',
       content: 'implemented login form',
       timestamp: Date.now(),
@@ -121,14 +117,14 @@ describe('SessionManager — history persistence', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
 
-    mgr.addHistoryEntry(session.id, { round: 1, role: 'coder', content: 'code v1', timestamp: 1000 });
-    mgr.addHistoryEntry(session.id, { round: 1, role: 'reviewer', content: 'review v1', timestamp: 2000 });
-    mgr.addHistoryEntry(session.id, { round: 2, role: 'coder', content: 'code v2', timestamp: 3000 });
+    mgr.addHistoryEntry(session.id, { role: 'coder', content: 'code v1', timestamp: 1000 });
+    mgr.addHistoryEntry(session.id, { role: 'reviewer', content: 'review v1', timestamp: 2000 });
+    mgr.addHistoryEntry(session.id, { role: 'coder', content: 'code v2', timestamp: 3000 });
 
     const histFile = path.join(sessionsDir, session.id, 'history.jsonl');
     const lines = fs.readFileSync(histFile, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(3);
-    expect(JSON.parse(lines[2]).round).toBe(2);
+    expect(JSON.parse(lines[2]).role).toBe('coder');
   });
 
   test('addHistoryEntry migrates legacy history.json on first append', () => {
@@ -141,12 +137,12 @@ describe('SessionManager — history persistence', () => {
     fs.writeFileSync(
       path.join(sessionDir, 'history.json'),
       JSON.stringify([
-        { round: 1, role: 'coder', content: 'old entry', timestamp: 1000 },
+        { role: 'coder', content: 'old entry', timestamp: 1000 },
       ]),
     );
 
     // Append new entry triggers migration
-    mgr.addHistoryEntry(session.id, { round: 2, role: 'coder', content: 'new entry', timestamp: 2000 });
+    mgr.addHistoryEntry(session.id, { role: 'coder', content: 'new entry', timestamp: 2000 });
 
     const histFile = path.join(sessionDir, 'history.jsonl');
     const lines = fs.readFileSync(histFile, 'utf-8').trim().split('\n');
@@ -164,15 +160,14 @@ describe('SessionManager — restore session', () => {
     const config = makeConfig();
     const session = mgr.createSession(config);
 
-    mgr.saveState(session.id, { round: 3, status: 'coding', currentRole: 'coder' });
-    mgr.addHistoryEntry(session.id, { round: 1, role: 'coder', content: 'code', timestamp: 1000 });
-    mgr.addHistoryEntry(session.id, { round: 1, role: 'reviewer', content: 'review', timestamp: 2000 });
+    mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
+    mgr.addHistoryEntry(session.id, { role: 'coder', content: 'code', timestamp: 1000 });
+    mgr.addHistoryEntry(session.id, { role: 'reviewer', content: 'review', timestamp: 2000 });
 
     const loaded = mgr.loadSession(session.id);
     expect(loaded.metadata.task).toBe('implement login');
     expect(loaded.metadata.coder).toBe('claude-code');
     expect(loaded.metadata.reviewer).toBe('codex');
-    expect(loaded.state.round).toBe(3);
     expect(loaded.state.status).toBe('coding');
     expect(loaded.state.currentRole).toBe('coder');
     expect(loaded.history).toHaveLength(2);
@@ -216,7 +211,7 @@ describe('SessionManager — crash consistency', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
 
-    mgr.addHistoryEntry(session.id, { round: 1, role: 'coder', content: 'complete entry', timestamp: 1000 });
+    mgr.addHistoryEntry(session.id, { role: 'coder', content: 'complete entry', timestamp: 1000 });
 
     // Simulate crash: append truncated JSON line
     const histFile = path.join(sessionsDir, session.id, 'history.jsonl');
@@ -237,9 +232,9 @@ describe('SessionManager — crash consistency', () => {
 
     // Write a corrupted line in the middle, followed by a valid line
     const histFile = path.join(sessionsDir, session.id, 'history.jsonl');
-    const validEntry = JSON.stringify({ round: 1, role: 'coder', content: 'ok', timestamp: 1000 });
+    const validEntry = JSON.stringify({ role: 'coder', content: 'ok', timestamp: 1000 });
     const corruptedLine = '{"round":2,"role":"coder","content":"trun';
-    const validEntry2 = JSON.stringify({ round: 3, role: 'reviewer', content: 'also ok', timestamp: 3000 });
+    const validEntry2 = JSON.stringify({ role: 'reviewer', content: 'also ok', timestamp: 3000 });
     fs.writeFileSync(histFile, `${validEntry}\n${corruptedLine}\n${validEntry2}\n`);
 
     expect(() => mgr.loadSession(session.id)).toThrow(SessionCorruptedError);
@@ -251,9 +246,9 @@ describe('SessionManager — crash consistency', () => {
 
     // Write a valid JSON but invalid shape entry in the middle
     const histFile = path.join(sessionsDir, session.id, 'history.jsonl');
-    const validEntry = JSON.stringify({ round: 1, role: 'coder', content: 'ok', timestamp: 1000 });
+    const validEntry = JSON.stringify({ role: 'coder', content: 'ok', timestamp: 1000 });
     const invalidShape = JSON.stringify({ foo: 'bar' }); // valid JSON, invalid HistoryEntry
-    const validEntry2 = JSON.stringify({ round: 3, role: 'reviewer', content: 'also ok', timestamp: 3000 });
+    const validEntry2 = JSON.stringify({ role: 'reviewer', content: 'also ok', timestamp: 3000 });
     fs.writeFileSync(histFile, `${validEntry}\n${invalidShape}\n${validEntry2}\n`);
 
     expect(() => mgr.loadSession(session.id)).toThrow(SessionCorruptedError);
@@ -292,7 +287,7 @@ describe('SessionManager — crash consistency', () => {
     const session = mgr.createSession(makeConfig());
     const sessionDir = path.join(sessionsDir, session.id);
 
-    mgr.saveState(session.id, { round: 1, status: 'coding', currentRole: 'coder' });
+    mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
 
     expect(fs.existsSync(path.join(sessionDir, 'snapshot.json.tmp'))).toBe(false);
     expect(fs.existsSync(path.join(sessionDir, 'snapshot.json'))).toBe(true);
@@ -338,7 +333,7 @@ describe('SessionManager — list sessions', () => {
 
       // Update s1 last to make it most recent
       vi.setSystemTime(4000);
-      mgr.saveState(s1.id, { round: 2, status: 'coding', currentRole: 'coder' });
+      mgr.saveState(s1.id, { status: 'coding', currentRole: 'coder' });
 
       const sessions = mgr.listSessions();
       expect(sessions).toHaveLength(3);
@@ -358,12 +353,11 @@ describe('SessionManager — list sessions', () => {
   test('listSessions includes project name, task, round, status, time', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig({ task: 'fix bug #42' }));
-    mgr.saveState(session.id, { round: 3, status: 'reviewing', currentRole: 'reviewer' });
+    mgr.saveState(session.id, { status: 'reviewing', currentRole: 'reviewer' });
 
     const sessions = mgr.listSessions();
     expect(sessions[0].task).toBe('fix bug #42');
     expect(sessions[0].projectDir).toBeDefined();
-    expect(sessions[0].round).toBe(3);
     expect(sessions[0].status).toBe('reviewing');
     expect(sessions[0].updatedAt).toBeDefined();
   });
@@ -381,7 +375,7 @@ describe('SessionManager — list sessions', () => {
       createdAt: 500, updatedAt: 500,
     }));
     fs.writeFileSync(path.join(legacyDir, 'state.json'), JSON.stringify({
-      round: 1, status: 'coding', currentRole: 'coder',
+      status: 'coding', currentRole: 'coder',
     }));
 
     const sessions = mgr.listSessions();
@@ -414,7 +408,7 @@ describe('SessionManager — updatedAt', () => {
     const snapBefore = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
     const beforeTime = snapBefore.metadata.updatedAt;
 
-    mgr.saveState(session.id, { round: 1, status: 'coding', currentRole: 'coder' });
+    mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
 
     const snapAfter = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
     expect(snapAfter.metadata.updatedAt).toBeGreaterThanOrEqual(beforeTime);
@@ -433,7 +427,7 @@ describe('Round6 BUG-4: updatedAt no +1ms drift when now > updatedAt', () => {
 
       // Save at t=2000: now=2000, updatedAt=1000 → should be max(2000, 1001) = 2000
       vi.setSystemTime(2000);
-      mgr.saveState(session.id, { round: 1, status: 'coding', currentRole: 'coder' });
+      mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
 
       const sessionDir = path.join(sessionsDir, session.id);
       const snap = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
@@ -457,11 +451,11 @@ describe('Round6 BUG-4: updatedAt no +1ms drift when now > updatedAt', () => {
 
       // Rapid saves at the same time — should still be monotonically increasing
       vi.setSystemTime(1000);
-      mgr.saveState(session.id, { round: 1, status: 'coding', currentRole: 'coder' });
+      mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
       const snap1 = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
 
       vi.setSystemTime(1000);
-      mgr.saveState(session.id, { round: 2, status: 'reviewing', currentRole: 'reviewer' });
+      mgr.saveState(session.id, { status: 'reviewing', currentRole: 'reviewer' });
       const snap2 = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
 
       // Both at t=1000 but updatedAt should be monotonically increasing
@@ -483,7 +477,7 @@ describe('Round6 BUG-4: updatedAt no +1ms drift when now > updatedAt', () => {
       // 100 rapid saves at different times (well-spaced)
       for (let i = 1; i <= 100; i++) {
         vi.setSystemTime(1000 + i * 100); // every 100ms
-        mgr.saveState(session.id, { round: i, status: 'coding', currentRole: 'coder' });
+        mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
       }
 
       const snap = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
@@ -509,53 +503,29 @@ describe('SessionManager — God session persistence (C.4)', () => {
       reasoning: 'Bug fix task',
       confidence: 0.85,
     };
-    const godConvergenceLog = [
-      {
-        round: 0,
-        timestamp: '2026-03-12T00:00:00Z',
-        classification: 'improving',
-        shouldTerminate: false,
-        blockingIssueCount: 3,
-        criteriaProgress: [],
-        summary: 'round 0',
-      },
-      {
-        round: 1,
-        timestamp: '2026-03-12T00:01:00Z',
-        classification: 'near_converged',
-        shouldTerminate: false,
-        blockingIssueCount: 1,
-        criteriaProgress: [],
-        summary: 'round 1',
-      },
-    ];
     mgr.saveState(session.id, {
-      round: 2,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god_ses_abc',
       godAdapter: 'codex',
       godTaskAnalysis,
-      godConvergenceLog,
     });
 
     const loaded = mgr.loadSession(session.id);
     expect(loaded.state.godSessionId).toBe('god_ses_abc');
     expect(loaded.state.godAdapter).toBe('codex');
     expect(loaded.state.godTaskAnalysis).toEqual(godTaskAnalysis);
-    expect(loaded.state.godConvergenceLog).toEqual(godConvergenceLog);
   });
 
   test('loadSession returns undefined God fields when not saved', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
 
-    mgr.saveState(session.id, { round: 1, status: 'coding', currentRole: 'coder' });
+    mgr.saveState(session.id, { status: 'coding', currentRole: 'coder' });
 
     const loaded = mgr.loadSession(session.id);
     expect(loaded.state.godSessionId).toBeUndefined();
     expect(loaded.state.godAdapter).toBeUndefined();
     expect(loaded.state.godTaskAnalysis).toBeUndefined();
-    expect(loaded.state.godConvergenceLog).toBeUndefined();
   });
 });

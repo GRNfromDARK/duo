@@ -37,7 +37,6 @@ function makeObs(type: Observation['type'] = 'work_output', source: Observation[
     summary: `test ${type}`,
     severity: 'info',
     timestamp: new Date().toISOString(),
-    round: 0,
   };
 }
 
@@ -558,7 +557,6 @@ describe('full Observe → Decide → Act cycle', () => {
   it('round increments when looping back to CODING', () => {
     const actor = startActor();
     sendStartAndSkipInit(actor, 'test');
-    expect(actor.getSnapshot().context.round).toBe(0);
 
     // Round 0: code → observe → decide → execute → back to coding
     actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
@@ -566,7 +564,6 @@ describe('full Observe → Decide → Act cycle', () => {
     actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'iterate' }]) });
     actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(1);
 
     actor.stop();
   });

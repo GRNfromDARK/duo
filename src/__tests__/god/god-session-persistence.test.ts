@@ -11,7 +11,7 @@ import { SessionManager } from '../../session/session-manager.js';
 import type { SessionConfig } from '../../types/session.js';
 import type { SessionState } from '../../session/session-manager.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
-import type { ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
+
 import { restoreGodSession } from '../../god/god-session-persistence.js';
 
 let tmpDir: string;
@@ -36,17 +36,6 @@ function makeTaskAnalysis(): GodTaskAnalysis {
   };
 }
 
-function makeConvergenceEntry(round: number): ConvergenceLogEntry {
-  return {
-    round,
-    timestamp: new Date().toISOString(),
-    classification: 'changes_requested',
-    shouldTerminate: false,
-    blockingIssueCount: 1,
-    criteriaProgress: [{ criterion: 'Tests pass', satisfied: false }],
-    summary: `Round ${round}: classification=changes_requested, blocking=1, terminate=false`,
-  };
-}
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'duo-god-persist-'));
@@ -65,7 +54,6 @@ describe('God session state persistence', () => {
     const session = mgr.createSession(makeConfig());
 
     const state: SessionState = {
-      round: 1,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-session-123',
@@ -86,7 +74,6 @@ describe('God session state persistence', () => {
 
     // Round 1: write godTaskAnalysis
     const state1: SessionState = {
-      round: 1,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-123',
@@ -102,7 +89,6 @@ describe('God session state persistence', () => {
     // Round 2: godTaskAnalysis preserved even if state update doesn't include it
     // (saveState merges partial state, preserving existing fields)
     const state2: Partial<SessionState> = {
-      round: 2,
       status: 'reviewing',
       currentRole: 'reviewer',
       godSessionId: 'god-123',
@@ -115,62 +101,22 @@ describe('God session state persistence', () => {
     expect(snap2.state.godTaskAnalysis).toEqual(analysis);
   });
 
-  test('godConvergenceLog appends each round', () => {
-    const mgr = new SessionManager(sessionsDir);
-    const session = mgr.createSession(makeConfig());
-
-    const entry1 = makeConvergenceEntry(1);
-    const state1: SessionState = {
-      round: 1,
-      status: 'reviewing',
-      currentRole: 'reviewer',
-      godSessionId: 'god-123',
-      godAdapter: 'codex',
-      godConvergenceLog: [entry1],
-    };
-    mgr.saveState(session.id, state1);
-
-    const sessionDir = path.join(sessionsDir, session.id);
-    let snap = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
-    expect(snap.state.godConvergenceLog).toHaveLength(1);
-
-    const entry2 = makeConvergenceEntry(2);
-    const state2: SessionState = {
-      round: 2,
-      status: 'reviewing',
-      currentRole: 'reviewer',
-      godSessionId: 'god-123',
-      godAdapter: 'codex',
-      godConvergenceLog: [entry1, entry2],
-    };
-    mgr.saveState(session.id, state2);
-
-    snap = JSON.parse(fs.readFileSync(path.join(sessionDir, 'snapshot.json'), 'utf-8'));
-    expect(snap.state.godConvergenceLog).toHaveLength(2);
-    expect(snap.state.godConvergenceLog[1].round).toBe(2);
-  });
+  // godConvergenceLog test removed (round removal).
 });
 
 // ── AC-2: Persistence data < 10KB (20-round long task simulation) ──
 
 describe('God session persistence size constraint (NFR-007)', () => {
-  test('persisted data < 10KB for 20-round long task', () => {
+  test('persisted data < 10KB for god task analysis', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig());
 
-    const convergenceLog: ConvergenceLogEntry[] = [];
-    for (let round = 1; round <= 20; round++) {
-      convergenceLog.push(makeConvergenceEntry(round));
-    }
-
     const state: SessionState = {
-      round: 20,
       status: 'completed',
       currentRole: 'coder',
       godSessionId: 'god-session-long-task-uuid-1234',
       godAdapter: 'codex',
       godTaskAnalysis: makeTaskAnalysis(),
-      godConvergenceLog: convergenceLog,
     };
     mgr.saveState(session.id, state);
 
@@ -183,7 +129,6 @@ describe('God session persistence size constraint (NFR-007)', () => {
       godSessionId: snapshot.state.godSessionId,
       godAdapter: snapshot.state.godAdapter,
       godTaskAnalysis: snapshot.state.godTaskAnalysis,
-      godConvergenceLog: snapshot.state.godConvergenceLog,
     };
     const godDataSize = Buffer.byteLength(JSON.stringify(godData), 'utf-8');
     expect(godDataSize).toBeLessThan(10240); // < 10KB
@@ -195,7 +140,6 @@ describe('God session persistence size constraint (NFR-007)', () => {
 describe('restoreGodSession', () => {
   test('always returns null because God adapters are stateless', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -212,7 +156,6 @@ describe('restoreGodSession', () => {
 
   test('returns null when godSessionId is missing', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'coding',
       currentRole: 'coder',
     };
@@ -224,7 +167,6 @@ describe('restoreGodSession', () => {
 
   test('returns null when godAdapter is missing', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -237,7 +179,6 @@ describe('restoreGodSession', () => {
 
   test('graceful degradation when adapter factory throws', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -262,7 +203,6 @@ describe('godTaskAnalysis round-trip', () => {
     const analysis = makeTaskAnalysis();
 
     mgr.saveState(session.id, {
-      round: 1,
       status: 'coding',
       currentRole: 'coder',
       godSessionId: 'god-123',
@@ -284,7 +224,6 @@ describe('God session graceful degradation', () => {
 
     // State without any god fields (legacy)
     mgr.saveState(session.id, {
-      round: 1,
       status: 'coding',
       currentRole: 'coder',
     });
@@ -293,6 +232,6 @@ describe('God session graceful degradation', () => {
     expect(loaded.state.godSessionId).toBeUndefined();
     expect(loaded.state.godAdapter).toBeUndefined();
     expect(loaded.state.godTaskAnalysis).toBeUndefined();
-    expect(loaded.state.godConvergenceLog).toBeUndefined();
+    // godConvergenceLog assertion removed (round removal).
   });
 });

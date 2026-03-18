@@ -27,7 +27,6 @@ function createDispatchContext(overrides: Partial<DispatchContext> = {}): Dispat
     pendingReviewerMessage: null,
     displayToUser: vi.fn(),
     auditLogger: new GodAuditLogger(tmpDir),
-    round: 1,
     tmpDir,
     ...overrides,
   };

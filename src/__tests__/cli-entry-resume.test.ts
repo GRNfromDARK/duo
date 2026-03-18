@@ -76,7 +76,6 @@ describe('cli resume entry', () => {
         updatedAt: 2,
       },
       state: {
-        round: 1,
         status: 'reviewing',
         currentRole: 'reviewer',
       },
@@ -136,7 +135,6 @@ describe('cli resume entry', () => {
         updatedAt: 2,
       },
       state: {
-        round: 1,
         status: 'reviewing',
         currentRole: 'reviewer',
       },

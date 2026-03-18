@@ -53,7 +53,6 @@ function createHandContext(overrides: Partial<HandExecutionContext> = {}): HandE
       ['reviewer', 'claude-code'],
     ]),
     auditLogger: new GodAuditLogger(tmpDir),
-    round: 1,
     sessionDir: tmpDir,
     cwd: tmpDir,
     ...overrides,
@@ -95,14 +94,13 @@ function makeLoadedSession(stateOverrides: Partial<SessionState> = {}): LoadedSe
       updatedAt: Date.now(),
     },
     state: {
-      round: 3,
       status: 'coding',
       currentRole: 'coder',
       ...stateOverrides,
     },
     history: [
-      { round: 0, role: 'coder', content: 'code output', timestamp: 1000 },
-      { round: 0, role: 'reviewer', content: 'review output', timestamp: 2000 },
+      { role: 'coder', content: 'code output', timestamp: 1000 },
+      { role: 'reviewer', content: 'review output', timestamp: 2000 },
     ],
   };
 }
@@ -282,7 +280,6 @@ describe('BUG-17 regression: DispatchContext pendingReviewerMessage consistency'
         pendingReviewerMessage: 'existing reviewer instruction',
         displayToUser: vi.fn(),
         auditLogger: new GodAuditLogger(tmpDir),
-        round: 1,
       };
 
       // Dispatch with reviewer-targeted message
@@ -306,7 +303,6 @@ describe('BUG-17 regression: DispatchContext pendingReviewerMessage consistency'
         pendingReviewerMessage: null,
         displayToUser: vi.fn(),
         auditLogger: new GodAuditLogger(tmpDir),
-        round: 1,
       };
 
       const result = dispatchMessages(
@@ -330,7 +326,6 @@ describe('BUG-17 regression: DispatchContext pendingReviewerMessage consistency'
         pendingReviewerMessage: 'reviewer msg',
         displayToUser: vi.fn(),
         auditLogger: new GodAuditLogger(tmpDir),
-        round: 1,
       };
 
       // Both fields are of same type: string | null

@@ -10,8 +10,6 @@ import { StatusBar, type StatusBarProps } from '../../ui/components/StatusBar.js
 function renderBar(overrides: Partial<StatusBarProps> = {}): string {
   const defaults: StatusBarProps = {
     projectPath: '/test/project',
-    round: 1,
-    maxRounds: 5,
     status: 'active',
     activeAgent: 'claude',
     tokenCount: 1200,
@@ -101,11 +99,9 @@ describe('StatusBar — God info display (Card D.2)', () => {
   });
 
   // Basic status bar elements still work
-  it('still shows round and token count', () => {
-    const output = renderBar({ round: 3, maxRounds: 10, tokenCount: 5000 });
-    expect(output).toContain('3/10');
-    expect(output).toMatch(/[█░]/); // progress bar
-    expect(output).toContain('5.0ktok');
+  it('still shows token count', () => {
+    const output = renderBar({ tokenCount: 5000 });
+    expect(output).toContain('5.0k');
   });
 
   it('still shows active agent and status', () => {

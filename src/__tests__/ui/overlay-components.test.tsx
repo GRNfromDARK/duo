@@ -60,7 +60,6 @@ describe('ContextOverlay', () => {
       <ContextOverlay
         columns={80}
         rows={24}
-        roundNumber={3}
         coderName="Claude"
         reviewerName="Codex"
         taskSummary="Fix auth bug"
@@ -71,27 +70,11 @@ describe('ContextOverlay', () => {
     expect(output).toContain('Context');
   });
 
-  it('shows round number', () => {
-    const { lastFrame } = render(
-      <ContextOverlay
-        columns={80}
-        rows={24}
-        roundNumber={5}
-        coderName="Claude"
-        reviewerName="Codex"
-        taskSummary="Build feature"
-        tokenEstimate={1000}
-      />,
-    );
-    expect(lastFrame()!).toContain('5');
-  });
-
   it('shows coder and reviewer names', () => {
     const { lastFrame } = render(
       <ContextOverlay
         columns={80}
         rows={24}
-        roundNumber={1}
         coderName="Claude"
         reviewerName="Gemini"
         taskSummary="Test"
@@ -108,7 +91,6 @@ describe('ContextOverlay', () => {
       <ContextOverlay
         columns={80}
         rows={24}
-        roundNumber={1}
         coderName="Claude"
         reviewerName="Codex"
         taskSummary="Test"

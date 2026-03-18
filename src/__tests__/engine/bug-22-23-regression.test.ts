@@ -38,7 +38,7 @@ function makeObs(
   source: Observation['source'] = 'coder',
   summary = `test ${type}`,
 ): Observation {
-  return { source, type, summary, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(
@@ -86,8 +86,6 @@ describe('BUG-22 regression: fallback envelope must not lose observations', () =
         {
           taskGoal: 'test task',
           currentPhaseId: 'phase-1',
-          round: 1,
-          maxRounds: 5,
           previousDecisions: [],
           availableAdapters: ['mock'],
           activeRole: null,

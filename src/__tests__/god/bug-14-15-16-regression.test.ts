@@ -35,7 +35,7 @@ vi.mock('../../god/god-audit.js', () => ({
 // ── Card D.1 helpers ──
 
 function makeObs(type = 'work_output', source = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 } as Observation;
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()} as Observation;
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
@@ -56,8 +56,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in prompt generatio
     // This is the buggy scenario: compound task without phaseType
     const ctx: PromptContext = {
       taskType: 'compound',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Explore then implement auth',
       // NO phaseId, NO phaseType — simulates the bug
     };
@@ -73,8 +71,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in prompt generatio
   it('compound WITH phaseType=explore uses explore strategy (the fix)', () => {
     const ctx: PromptContext = {
       taskType: 'compound',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Explore the auth flow and then enhance it',
       phaseId: 'explore-phase',
       phaseType: 'explore',
@@ -100,8 +96,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in prompt generatio
   it('compound WITH phaseType=debug uses debug strategy', () => {
     const ctx: PromptContext = {
       taskType: 'compound',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Debug and fix auth',
       phaseId: 'debug-phase',
       phaseType: 'debug',
@@ -116,8 +110,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in prompt generatio
   it('compound WITH phaseType=review uses review strategy', () => {
     const ctx: PromptContext = {
       taskType: 'compound',
-      round: 3,
-      maxRounds: 5,
       taskGoal: 'Review auth implementation',
       phaseId: 'review-phase',
       phaseType: 'review',
@@ -134,8 +126,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in REVIEWER prompt 
   it('reviewer prompt without phaseType uses default review instructions (the bug scenario)', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'compound',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Explore then implement auth',
       lastCoderOutput: 'exploration results',
       // NO phaseId, NO phaseType — simulates the bug
@@ -151,8 +141,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in REVIEWER prompt 
   it('reviewer prompt WITH phaseType=explore uses explore-aware review instructions (the fix)', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'compound',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Explore the auth flow and then enhance it',
       lastCoderOutput: 'exploration results',
       phaseId: 'explore-phase',
@@ -172,8 +160,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in REVIEWER prompt 
   it('reviewer prompt WITH phaseType=code uses standard review instructions', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'compound',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Multi-phase project',
       lastCoderOutput: 'implementation code',
       phaseId: 'code-phase',
@@ -189,8 +175,6 @@ describe('BUG-14 regression: compound task phaseId/phaseType in REVIEWER prompt 
   it('reviewer prompt for non-compound task ignores phaseId/phaseType', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 3,
       taskGoal: 'Simple code task',
       lastCoderOutput: 'code output',
       phaseId: 'should-be-ignored',

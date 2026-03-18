@@ -91,7 +91,7 @@ describe('cli mouse input wiring', () => {
     expect(enterAlternateScreenMock).toHaveBeenCalledWith(process.stdout);
 
     expect(renderMock).toHaveBeenCalledTimes(1);
-    expect(renderMock.mock.calls[0]?.[1]).toMatchObject({
+    expect((renderMock.mock.calls as unknown[][])[0]?.[1]).toMatchObject({
       exitOnCtrlC: false,
       stdin: proxyStdin,
     });

@@ -15,7 +15,6 @@ import {
   generateReviewerPrompt,
 } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import type { ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
 
 // Mock audit log to avoid filesystem writes
 vi.mock('../../god/god-audit.js', () => ({
@@ -41,11 +40,8 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
   test('generates Coder prompt with task goal and round info', () => {
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Implement login',
       unresolvedIssues: [],
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test',
       seq: 1,
@@ -53,18 +49,14 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
 
     expect(prompt).toContain('Implement login');
     expect(prompt).toContain('## Instructions');
-    expect(prompt).toContain('Round 1 of 5');
   });
 
   test('includes unresolvedIssues as required fixes in Coder prompt (FR-003b)', () => {
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Implement login',
       lastReviewerOutput: 'Missing validation',
       unresolvedIssues: ['Add input validation', 'Fix SQL injection'],
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test',
       seq: 2,
@@ -78,11 +70,8 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
   test('writes audit log entry for Coder prompt (AC-015)', () => {
     generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Implement login',
       unresolvedIssues: [],
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test-session',
       seq: 42,
@@ -107,15 +96,13 @@ describe('AC-2: God dynamically generates Reviewer prompt', () => {
   test('generates Reviewer prompt with task goal and coder output', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Implement login',
       lastCoderOutput: 'Added login endpoint',
     });
 
     expect(prompt).toContain('Implement login');
     expect(prompt).toContain('## Review Instructions');
-    expect(prompt).toContain('Coder Output (Round 1)');
+    expect(prompt).toContain('## Coder Output');
     expect(prompt).toContain('Added login endpoint');
   });
 });
@@ -128,11 +115,8 @@ describe('AC-3: explore prompt has no execution verbs (AC-013)', () => {
   test('explore Coder prompt does not contain implement/create/write code', () => {
     const prompt = generateCoderPrompt({
       taskType: 'explore',
-      round: 1,
-      maxRounds: 3,
       taskGoal: 'Understand the auth flow',
       unresolvedIssues: [],
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test',
       seq: 1,
@@ -156,12 +140,9 @@ describe('AC-4: unresolvedIssues as Coder must-do list', () => {
     const issues = ['Fix null pointer in auth.ts:42', 'Add rate limiting', 'Handle timeout errors'];
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 3,
-      maxRounds: 5,
       taskGoal: 'Fix auth bugs',
       lastReviewerOutput: 'Still failing',
       unresolvedIssues: issues,
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test',
       seq: 3,
@@ -176,11 +157,8 @@ describe('AC-4: unresolvedIssues as Coder must-do list', () => {
   test('empty unresolvedIssues does not add required fixes section', () => {
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Build feature',
       unresolvedIssues: [],
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test',
       seq: 1,
@@ -203,11 +181,8 @@ describe('AC-5: prompt summary written to audit log', () => {
     const longGoal = 'A'.repeat(1000);
     generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: longGoal,
       unresolvedIssues: [],
-      convergenceLog: [],
     }, {
       sessionDir: '/tmp/test',
       seq: 10,
@@ -219,44 +194,4 @@ describe('AC-5: prompt summary written to audit log', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════════
-// Convergence log trend included in God prompt
-// ══════════════════════════════════════════════════════════════════
-
-describe('Convergence log trend in Coder prompt', () => {
-  test('includes convergence trend when log entries exist', () => {
-    const prompt = generateCoderPrompt({
-      taskType: 'code',
-      round: 3,
-      maxRounds: 5,
-      taskGoal: 'Fix bugs',
-      unresolvedIssues: ['Fix memory leak'],
-      convergenceLog: [
-        {
-          round: 1,
-          timestamp: '2026-03-12T00:00:00Z',
-          blockingIssueCount: 5,
-          classification: 'major_issues',
-          shouldTerminate: false,
-          criteriaProgress: [],
-          summary: 'round 1',
-        },
-        {
-          round: 2,
-          timestamp: '2026-03-12T00:01:00Z',
-          blockingIssueCount: 2,
-          classification: 'minor_issues',
-          shouldTerminate: false,
-          criteriaProgress: [],
-          summary: 'round 2',
-        },
-      ],
-    }, {
-      sessionDir: '/tmp/test',
-      seq: 3,
-    });
-
-    expect(prompt).toContain('## Convergence Trend');
-    expect(prompt).toContain('2 blocking in round 2');
-  });
-});
+// Convergence log trend tests removed (round removal).

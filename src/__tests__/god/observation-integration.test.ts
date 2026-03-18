@@ -17,7 +17,7 @@ import {
 } from '../../god/observation-integration.js';
 import { ObservationSchema } from '../../types/observation.js';
 
-const meta = { round: 1, phaseId: 'phase-1', adapter: 'claude-code' };
+const meta = { phaseId: 'phase-1', adapter: 'claude-code' };
 
 // ── Task 1: Coder Output Integration ──
 
@@ -76,13 +76,11 @@ describe('processWorkerOutput — coder', () => {
     expect(result.observation.type).toBe('meta_output');
   });
 
-  it('observation carries round and adapter from meta', () => {
+  it('observation carries adapter from meta', () => {
     const result = processWorkerOutput('output', 'coder', {
-      round: 3,
       adapter: 'codex',
       phaseId: 'phase-2',
     });
-    expect(result.observation.round).toBe(3);
     expect(result.observation.adapter).toBe('codex');
     expect(result.observation.phaseId).toBe('phase-2');
   });
@@ -138,42 +136,40 @@ describe('processWorkerOutput — reviewer', () => {
 describe('createInterruptObservation', () => {
   // AC-3: Ctrl+C produces human_interrupt observation
   it('AC-3: creates human_interrupt observation for Ctrl+C', () => {
-    const obs = createInterruptObservation(2);
+    const obs = createInterruptObservation();
     expect(obs.type).toBe('human_interrupt');
     expect(obs.source).toBe('human');
     expect(obs.severity).toBe('warning');
-    expect(obs.round).toBe(2);
     expect(obs.summary).toContain('Ctrl+C');
   });
 
   it('carries optional phaseId', () => {
-    const obs = createInterruptObservation(1, { phaseId: 'phase-3' });
+    const obs = createInterruptObservation({ phaseId: 'phase-3' });
     expect(obs.phaseId).toBe('phase-3');
   });
 
   it('passes Zod validation', () => {
-    const obs = createInterruptObservation(1);
+    const obs = createInterruptObservation();
     expect(() => ObservationSchema.parse(obs)).not.toThrow();
   });
 });
 
 describe('createTextInterruptObservation', () => {
   it('creates human_message observation for text interrupt', () => {
-    const obs = createTextInterruptObservation('fix the bug instead', 3);
+    const obs = createTextInterruptObservation('fix the bug instead');
     expect(obs.type).toBe('human_message');
     expect(obs.source).toBe('human');
     expect(obs.severity).toBe('info');
-    expect(obs.round).toBe(3);
     expect(obs.summary).toBe('fix the bug instead');
   });
 
   it('carries rawRef with the user text', () => {
-    const obs = createTextInterruptObservation('use a different approach', 1);
+    const obs = createTextInterruptObservation('use a different approach');
     expect(obs.rawRef).toBe('use a different approach');
   });
 
   it('passes Zod validation', () => {
-    const obs = createTextInterruptObservation('hello', 1);
+    const obs = createTextInterruptObservation('hello');
     expect(() => ObservationSchema.parse(obs)).not.toThrow();
   });
 });
@@ -182,16 +178,15 @@ describe('createTextInterruptObservation', () => {
 
 describe('createProcessErrorObservation', () => {
   it('creates tool_failure observation for process errors', () => {
-    const obs = createProcessErrorObservation('Process exited with code 1', 2);
+    const obs = createProcessErrorObservation('Process exited with code 1');
     expect(obs.type).toBe('tool_failure');
     expect(obs.source).toBe('runtime');
     expect(obs.severity).toBe('error');
-    expect(obs.round).toBe(2);
     expect(obs.summary).toBe('Process exited with code 1');
   });
 
   it('carries adapter and phaseId', () => {
-    const obs = createProcessErrorObservation('crash', 1, {
+    const obs = createProcessErrorObservation('crash', {
       adapter: 'codex',
       phaseId: 'phase-1',
     });
@@ -200,12 +195,12 @@ describe('createProcessErrorObservation', () => {
   });
 
   it('carries rawRef with the error message', () => {
-    const obs = createProcessErrorObservation('segfault', 1);
+    const obs = createProcessErrorObservation('segfault');
     expect(obs.rawRef).toBe('segfault');
   });
 
   it('passes Zod validation', () => {
-    const obs = createProcessErrorObservation('error', 1);
+    const obs = createProcessErrorObservation('error');
     expect(() => ObservationSchema.parse(obs)).not.toThrow();
   });
 });
@@ -213,16 +208,15 @@ describe('createProcessErrorObservation', () => {
 describe('createTimeoutObservation', () => {
   // AC-4: process timeout produces tool_failure observation
   it('AC-4: creates tool_failure observation for timeout', () => {
-    const obs = createTimeoutObservation(4);
+    const obs = createTimeoutObservation();
     expect(obs.type).toBe('tool_failure');
     expect(obs.source).toBe('runtime');
     expect(obs.severity).toBe('error');
-    expect(obs.round).toBe(4);
     expect(obs.summary).toBe('Process timeout');
   });
 
   it('carries adapter and phaseId', () => {
-    const obs = createTimeoutObservation(1, {
+    const obs = createTimeoutObservation({
       adapter: 'claude-code',
       phaseId: 'phase-2',
     });
@@ -231,7 +225,7 @@ describe('createTimeoutObservation', () => {
   });
 
   it('passes Zod validation', () => {
-    const obs = createTimeoutObservation(1);
+    const obs = createTimeoutObservation();
     expect(() => ObservationSchema.parse(obs)).not.toThrow();
   });
 });

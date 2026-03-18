@@ -27,7 +27,7 @@ function sendStartAndSkipInit(actor: ReturnType<typeof startActor>, prompt: stri
 }
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
@@ -61,8 +61,6 @@ describe('WorkflowMachine', () => {
     it('should have correct initial context', () => {
       const actor = startActor();
       const ctx = actor.getSnapshot().context;
-      expect(ctx.round).toBe(0);
-      expect(ctx.maxRounds).toBe(10);
       expect(ctx.consecutiveRouteToCoder).toBe(0);
       expect(ctx.activeProcess).toBeNull();
       expect(ctx.lastError).toBeNull();
@@ -72,11 +70,7 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('should accept custom maxRounds via input', () => {
-      const actor = startActor({ maxRounds: 5 });
-      expect(actor.getSnapshot().context.maxRounds).toBe(5);
-      actor.stop();
-    });
+    // maxRounds test removed (round removal).
   });
 
   describe('AC-2: normal flow (Observe → Decide → Act)', () => {
@@ -157,7 +151,6 @@ describe('WorkflowMachine', () => {
       actor.send({ type: 'DECISION_READY', envelope: makeEnvelope([{ type: 'send_to_coder', message: 'fix' }]) });
       actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
       expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.round).toBe(1);
 
       // Round 1: accept
       advanceFromCoding(actor, [{ type: 'accept_task', rationale: 'reviewer_aligned', summary: 'done' }]);
@@ -197,7 +190,7 @@ describe('WorkflowMachine', () => {
     });
 
     it('should preserve context through serialization', () => {
-      const actor1 = startActor({ maxRounds: 3 });
+      const actor1 = startActor({});
       sendStartAndSkipInit(actor1, 'ctx test');
       // Go through one full cycle
       advanceFromCoding(actor1, [{ type: 'send_to_coder', message: 'iterate' }]);
@@ -208,8 +201,6 @@ describe('WorkflowMachine', () => {
       const actor2 = createActor(workflowMachine, { snapshot, input: {} });
       actor2.start();
 
-      expect(actor2.getSnapshot().context.round).toBe(1);
-      expect(actor2.getSnapshot().context.maxRounds).toBe(3);
       expect(actor2.getSnapshot().context.taskPrompt).toBe('ctx test');
       expect(actor2.getSnapshot().value).toBe('CODING');
       actor2.stop();
@@ -401,30 +392,15 @@ describe('WorkflowMachine', () => {
       actor.stop();
     });
 
-    it('TASK_INIT_COMPLETE with maxRounds updates context.maxRounds', () => {
-      const actor = startActor({ maxRounds: 20 });
-      actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
-      expect(actor.getSnapshot().context.maxRounds).toBe(5);
-      actor.stop();
-    });
-
-    it('TASK_INIT_COMPLETE without maxRounds preserves existing maxRounds', () => {
-      const actor = startActor({ maxRounds: 20 });
-      actor.send({ type: 'START_TASK', prompt: 'test' });
-      actor.send({ type: 'TASK_INIT_COMPLETE' });
-      expect(actor.getSnapshot().context.maxRounds).toBe(20);
-      actor.stop();
-    });
+    // maxRounds tests removed (round removal).
 
     it('full flow through TASK_INIT: IDLE → TASK_INIT → CODING → OBSERVING', () => {
       const actor = startActor();
       actor.send({ type: 'START_TASK', prompt: 'build it' });
       expect(actor.getSnapshot().value).toBe('TASK_INIT');
 
-      actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 6 });
+      actor.send({ type: 'TASK_INIT_COMPLETE'});
       expect(actor.getSnapshot().value).toBe('CODING');
-      expect(actor.getSnapshot().context.maxRounds).toBe(6);
 
       actor.send({ type: 'CODE_COMPLETE', output: 'v1' });
       expect(actor.getSnapshot().value).toBe('OBSERVING');

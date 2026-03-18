@@ -338,7 +338,6 @@ describe('God audit log', () => {
     const entry: GodAuditEntry = {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: 'User wants to implement login',
       outputSummary: 'Classified as code task',
@@ -362,7 +361,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: 'first',
       outputSummary: 'first output',
@@ -372,7 +370,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 2,
       timestamp: new Date().toISOString(),
-      round: 1,
       decisionType: 'DYNAMIC_ROUNDS',
       inputSummary: 'second',
       outputSummary: 'adjusted rounds',
@@ -393,7 +390,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: longString,
       outputSummary: longString,
@@ -412,7 +408,6 @@ describe('God audit log', () => {
     appendAuditLog(tempDir, {
       seq: 1,
       timestamp: new Date().toISOString(),
-      round: 0,
       decisionType: 'TASK_INIT',
       inputSummary: 'test',
       outputSummary: 'test',

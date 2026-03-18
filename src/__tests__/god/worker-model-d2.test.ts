@@ -34,7 +34,6 @@ function makeObservation(overrides: Partial<Observation> = {}): Observation {
     summary: 'Coder produced code changes',
     severity: 'info',
     timestamp: '2026-03-13T12:00:00.000Z',
-    round: 1,
     phaseId: 'phase-1',
     ...overrides,
   };
@@ -87,8 +86,6 @@ describe('AC-1: Coder as pure executor', () => {
   test('coder prompt declares worker role — no accept authority', () => {
     const prompt = generateCoderPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 10,
       taskGoal: 'Implement login feature',
     });
 
@@ -101,8 +98,6 @@ describe('AC-1: Coder as pure executor', () => {
   test('coder prompt declares worker role for compound task type', () => {
     const prompt = generateCoderPrompt({
       taskType: 'compound',
-      round: 1,
-      maxRounds: 10,
       taskGoal: 'Multi-phase project',
       phaseId: 'phase-1',
       phaseType: 'code',
@@ -116,7 +111,7 @@ describe('AC-1: Coder as pure executor', () => {
     const result = processWorkerOutput(
       'I have implemented the login feature with proper validation.',
       'coder',
-      { round: 1 },
+      {},
     );
 
     expect(result.observation.type).toBe('work_output');
@@ -134,8 +129,6 @@ describe('AC-2: Reviewer as observation provider', () => {
   test('reviewer prompt declares observation role — verdict is informational', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 10,
       taskGoal: 'Implement login feature',
       lastCoderOutput: 'I implemented the login...',
     });
@@ -149,7 +142,7 @@ describe('AC-2: Reviewer as observation provider', () => {
     const result = processWorkerOutput(
       'Review complete. 2 blocking issues found. [CHANGES_REQUESTED]',
       'reviewer',
-      { round: 1 },
+      {},
     );
 
     expect(result.observation.type).toBe('review_output');
@@ -164,7 +157,7 @@ describe('AC-2: Reviewer as observation provider', () => {
     const result = processWorkerOutput(
       'All issues resolved. [APPROVED]',
       'reviewer',
-      { round: 1 },
+      {},
     );
 
     // Only forms observation — accept must come from God's accept_task Hand
@@ -447,7 +440,6 @@ describe('AC-6: Audit trail for reviewer override', () => {
     });
 
     logReviewerOverrideAudit(mockLogger, {
-      round: 3,
       reviewerObservation: reviewerObs,
       envelope,
     });
@@ -481,7 +473,6 @@ describe('AC-6: Audit trail for reviewer override', () => {
     });
 
     logReviewerOverrideAudit(mockLogger, {
-      round: 3,
       reviewerObservation: reviewerObs,
       envelope,
     });
@@ -507,13 +498,11 @@ describe('AC-6: Audit trail for reviewer override', () => {
     });
 
     logReviewerOverrideAudit(mockLogger, {
-      round: 5,
       reviewerObservation: reviewerObs,
       envelope,
     });
 
     const entry = mockLogger.entries[0];
-    expect(entry.round).toBe(5);
     expect(entry.decision).toHaveProperty('envelope');
   });
 });

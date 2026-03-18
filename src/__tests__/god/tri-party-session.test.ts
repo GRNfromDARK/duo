@@ -61,7 +61,6 @@ describe('AC-039: Tri-party session ID atomic commit', () => {
     const session = mgr.createSession(makeConfig());
 
     const state: SessionState = {
-      round: 1,
       status: 'coding',
       currentRole: 'coder',
       coderSessionId: 'coder-session-001',
@@ -81,7 +80,6 @@ describe('AC-039: Tri-party session ID atomic commit', () => {
 
   test('extractTriPartyState extracts all three session IDs from SessionState', () => {
     const state: SessionState = {
-      round: 2,
       status: 'reviewing',
       currentRole: 'reviewer',
       coderSessionId: 'coder-abc',
@@ -97,7 +95,6 @@ describe('AC-039: Tri-party session ID atomic commit', () => {
 
   test('extractTriPartyState returns null for missing session IDs', () => {
     const state: SessionState = {
-      round: 1,
       status: 'coding',
       currentRole: 'coder',
     };
@@ -268,7 +265,6 @@ describe('Tri-party session restore via SessionManager', () => {
 
     // Simulate a session with all three parties active
     const state: SessionState = {
-      round: 3,
       status: 'reviewing',
       currentRole: 'reviewer',
       coderSessionId: 'coder-roundtrip-001',
@@ -304,7 +300,6 @@ describe('Tri-party session restore via SessionManager', () => {
 
     // Legacy state with only coder and reviewer
     const state: SessionState = {
-      round: 2,
       status: 'coding',
       currentRole: 'coder',
       coderSessionId: 'coder-legacy-001',

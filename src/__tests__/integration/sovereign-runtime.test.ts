@@ -61,7 +61,6 @@ function makeObs(
     summary: `test ${type}`,
     severity: 'info',
     timestamp: new Date().toISOString(),
-    round: 0,
     ...overrides,
   };
 }
@@ -108,7 +107,6 @@ function makeHandExecutionContext(overrides?: Partial<HandExecutionContext>): Ha
     clarificationState: { active: false, question: null },
     interruptResumeStrategy: null,
     adapterConfig: new Map(),
-    round: 0,
     sessionDir,
     cwd: tmpDir,
     ...overrides,
@@ -123,12 +121,12 @@ describe('Test 1: Normal Flow (AC-1)', () => {
   it('Coder output → classify work_output → God decides review → Reviewer output → God decides accept with rationale and complete audit', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'implement feature X' });
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor.send({ type: 'TASK_INIT_COMPLETE'});
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // ── Step 1: Coder produces output ──
     const coderRaw = 'function featureX() { return "implemented"; }';
-    const coderResult = processWorkerOutput(coderRaw, 'coder', { round: 0 });
+    const coderResult = processWorkerOutput(coderRaw, 'coder', {});
 
     // Verify classification
     expect(coderResult.observation.type).toBe('work_output');
@@ -163,13 +161,11 @@ describe('Test 1: Normal Flow (AC-1)', () => {
       pendingReviewerMessage: null,
       displayToUser: (msg: string) => displayedMessages.push(msg),
       auditLogger: new GodAuditLogger(sessionDir),
-      round: 0,
     };
     dispatchMessages(envelopeToReview.messages, dispatchCtx1);
 
     // Log envelope decision
     logEnvelopeDecision(new GodAuditLogger(sessionDir), {
-      round: 0,
       observations: [coderResult.observation],
       envelope: envelopeToReview,
       executionResults: execResults1,
@@ -183,7 +179,7 @@ describe('Test 1: Normal Flow (AC-1)', () => {
 
     // ── Step 3: Reviewer approves ──
     const reviewRaw = 'Code looks good. All edge cases handled. [APPROVED]';
-    const reviewResult = processWorkerOutput(reviewRaw, 'reviewer', { round: 0 });
+    const reviewResult = processWorkerOutput(reviewRaw, 'reviewer', {});
     expect(reviewResult.observation.type).toBe('review_output');
     expect(reviewResult.observation.source).toBe('reviewer');
     expect(reviewResult.isWork).toBe(true);
@@ -216,7 +212,6 @@ describe('Test 1: Normal Flow (AC-1)', () => {
     // Log audit
     const auditLogger = new GodAuditLogger(sessionDir);
     logEnvelopeDecision(auditLogger, {
-      round: 0,
       observations: [reviewResult.observation],
       envelope: envelopeAccept,
       executionResults: execResults2,
@@ -248,12 +243,12 @@ describe('Test 2: External Fault (AC-2)', () => {
   it('quota_exhausted is classified as incident, not work_output; God decides switch_adapter', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'fix bug' });
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor.send({ type: 'TASK_INIT_COMPLETE'});
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // ── Coder hits quota ──
     const quotaRaw = "You're out of extra usage · resets 7pm (Asia/Shanghai)";
-    const quotaResult = processWorkerOutput(quotaRaw, 'coder', { round: 0 });
+    const quotaResult = processWorkerOutput(quotaRaw, 'coder', {});
 
     // Verify: classified as quota_exhausted, NOT work_output
     expect(quotaResult.observation.type).toBe('quota_exhausted');
@@ -301,7 +296,7 @@ describe('Test 2: External Fault (AC-2)', () => {
 
   it('auth_failed does NOT trigger CODE_COMPLETE', () => {
     const authRaw = 'Error: authentication failed, unauthorized (403)';
-    const result = processWorkerOutput(authRaw, 'coder', { round: 0 });
+    const result = processWorkerOutput(authRaw, 'coder', {});
     expect(result.observation.type).toBe('auth_failed');
     expect(result.isWork).toBe(false);
     expect(result.shouldRouteToGod).toBe(true);
@@ -316,11 +311,11 @@ describe('Test 3: Empty Output (AC-3)', () => {
   it('empty output classified as empty_output, God retries then stops', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'generate code' });
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor.send({ type: 'TASK_INIT_COMPLETE'});
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // ── First empty output ──
-    const emptyResult1 = processWorkerOutput('', 'coder', { round: 0 });
+    const emptyResult1 = processWorkerOutput('', 'coder', {});
     expect(emptyResult1.observation.type).toBe('empty_output');
     expect(emptyResult1.observation.severity).toBe('warning');
     expect(emptyResult1.isWork).toBe(false);
@@ -346,7 +341,7 @@ describe('Test 3: Empty Output (AC-3)', () => {
     expect(actor.getSnapshot().value).toBe('CODING');
 
     // ── Second empty output ──
-    const emptyResult2 = processWorkerOutput('   ', 'coder', { round: 1 });
+    const emptyResult2 = processWorkerOutput('   ', 'coder', {});
     expect(emptyResult2.observation.type).toBe('empty_output');
 
     const escalated2 = tracker.trackAndEscalate(emptyResult2.observation);
@@ -383,15 +378,15 @@ describe('Test 3: Empty Output (AC-3)', () => {
   });
 
   it('whitespace-only output is classified as empty_output, not work_output', () => {
-    const ws1 = processWorkerOutput('', 'coder', { round: 0 });
+    const ws1 = processWorkerOutput('', 'coder', {});
     expect(ws1.observation.type).toBe('empty_output');
     expect(ws1.isWork).toBe(false);
 
-    const ws2 = processWorkerOutput('   \n\t  ', 'coder', { round: 0 });
+    const ws2 = processWorkerOutput('   \n\t  ', 'coder', {});
     expect(ws2.observation.type).toBe('empty_output');
     expect(ws2.isWork).toBe(false);
 
-    const ws3 = processWorkerOutput('\n', 'reviewer', { round: 0 });
+    const ws3 = processWorkerOutput('\n', 'reviewer', {});
     expect(ws3.observation.type).toBe('empty_output');
     expect(ws3.isWork).toBe(false);
   });
@@ -405,7 +400,7 @@ describe('Test 5: Reviewer Override (AC-5)', () => {
   it('Reviewer says changes_requested → God overrides → accept with audit trail', async () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'implement auth' });
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor.send({ type: 'TASK_INIT_COMPLETE'});
 
     // Fast-forward to REVIEWING
     actor.send({ type: 'CODE_COMPLETE', output: 'auth code' });
@@ -417,7 +412,7 @@ describe('Test 5: Reviewer Override (AC-5)', () => {
 
     // ── Reviewer says CHANGES_REQUESTED ──
     const reviewRaw = 'Missing edge case for empty password. [CHANGES_REQUESTED]';
-    const reviewResult = processWorkerOutput(reviewRaw, 'reviewer', { round: 0 });
+    const reviewResult = processWorkerOutput(reviewRaw, 'reviewer', {});
     expect(reviewResult.observation.type).toBe('review_output');
     expect(reviewResult.observation.rawRef).toContain('[CHANGES_REQUESTED]');
 
@@ -454,7 +449,6 @@ describe('Test 5: Reviewer Override (AC-5)', () => {
 
     // Log via logReviewerOverrideAudit
     logReviewerOverrideAudit(auditLogger, {
-      round: 0,
       reviewerObservation: reviewResult.observation,
       envelope: envelopeOverride,
     });
@@ -469,7 +463,6 @@ describe('Test 5: Reviewer Override (AC-5)', () => {
 
     // Log via logEnvelopeDecision for full tracking
     logEnvelopeDecision(auditLogger, {
-      round: 0,
       observations: [reviewResult.observation],
       envelope: envelopeOverride,
       executionResults: execResults,
@@ -510,7 +503,7 @@ describe('Test 6: State Change Enforcement (AC-6)', () => {
       { type: 'send_to_coder', message: 'Continue working' },
     ];
 
-    const violations = checkNLInvariantViolations(messages, actions, { round: 0, phaseId: 'p1' });
+    const violations = checkNLInvariantViolations(messages, actions, { phaseId: 'p1' });
 
     // Should detect the NL/action mismatch
     expect(violations.length).toBeGreaterThanOrEqual(1);
@@ -528,7 +521,7 @@ describe('Test 6: State Change Enforcement (AC-6)', () => {
       { type: 'send_to_coder', message: 'Start phase 2 work' },
     ];
 
-    const violations = checkNLInvariantViolations(messages, actions, { round: 0, phaseId: 'p1' });
+    const violations = checkNLInvariantViolations(messages, actions, { phaseId: 'p1' });
     expect(violations.length).toBeGreaterThanOrEqual(1);
     const phaseViolation = violations.find(v => v.summary.includes('phase'));
     expect(phaseViolation).toBeDefined();
@@ -541,7 +534,7 @@ describe('Test 6: State Change Enforcement (AC-6)', () => {
     ];
     const actions: GodAction[] = [];
 
-    const violations = checkNLInvariantViolations(messages, actions, { round: 0, phaseId: 'p1' });
+    const violations = checkNLInvariantViolations(messages, actions, { phaseId: 'p1' });
     expect(violations.length).toBeGreaterThanOrEqual(1);
     const switchViolation = violations.find(v => v.summary.includes('adapter'));
     expect(switchViolation).toBeDefined();
@@ -555,14 +548,14 @@ describe('Test 6: State Change Enforcement (AC-6)', () => {
       { type: 'accept_task', rationale: 'reviewer_aligned', summary: 'All criteria met' },
     ];
 
-    const violations = checkNLInvariantViolations(messages, actions, { round: 0, phaseId: 'p1' });
+    const violations = checkNLInvariantViolations(messages, actions, { phaseId: 'p1' });
     expect(violations).toHaveLength(0);
   });
 
   it('state machine does not advance when envelope has no action-backed state change', () => {
     const actor = startActor();
     actor.send({ type: 'START_TASK', prompt: 'task' });
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor.send({ type: 'TASK_INIT_COMPLETE'});
     actor.send({ type: 'CODE_COMPLETE', output: 'done' });
     actor.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
     expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
@@ -624,14 +617,14 @@ describe('KPI: External Fault False Advancement Rate = 0 (NFR-003, AC-8)', () =>
 
   for (const { raw, expectedType } of FAULT_OUTPUTS) {
     it(`"${raw.slice(0, 40)}..." → ${expectedType}, isWork=false`, () => {
-      const result = processWorkerOutput(raw, 'coder', { round: 0 });
+      const result = processWorkerOutput(raw, 'coder', {});
       expect(result.observation.type).toBe(expectedType);
       expect(result.isWork).toBe(false);
       expect(result.shouldRouteToGod).toBe(true);
     });
 
     it(`"${raw.slice(0, 40)}..." from reviewer → ${expectedType}, isWork=false`, () => {
-      const result = processWorkerOutput(raw, 'reviewer', { round: 0 });
+      const result = processWorkerOutput(raw, 'reviewer', {});
       expect(result.observation.type).toBe(expectedType);
       expect(result.isWork).toBe(false);
     });
@@ -719,7 +712,6 @@ describe('KPI: Critical Override Auditability = 100% (NFR-002, AC-10)', () => {
     );
 
     logEnvelopeDecision(auditLogger, {
-      round: 1,
       observations: [makeObs('review_output', 'reviewer')],
       envelope,
       executionResults: [makeObs('phase_progress_signal', 'runtime')],
@@ -755,7 +747,6 @@ describe('KPI: Critical Override Auditability = 100% (NFR-002, AC-10)', () => {
     );
 
     logEnvelopeDecision(auditLogger, {
-      round: 1,
       observations: [reviewerObs],
       envelope,
       executionResults: [makeObs('phase_progress_signal', 'runtime')],

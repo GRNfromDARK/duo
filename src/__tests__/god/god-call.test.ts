@@ -125,7 +125,6 @@ describe('collectGodAdapterOutput', () => {
         timeoutMs: 30_000,
         logging: {
           sessionDir,
-          round: 3,
           kind: 'god_post_reviewer',
           meta: { attempt: 2 },
         },
@@ -135,7 +134,6 @@ describe('collectGodAdapterOutput', () => {
     const logPath = path.join(sessionDir, 'prompt-log.jsonl');
     const [line] = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
     const entry = JSON.parse(line) as {
-      round: number;
       agent: string;
       adapter: string;
       kind: string;
@@ -144,7 +142,6 @@ describe('collectGodAdapterOutput', () => {
       meta?: Record<string, unknown>;
     };
 
-    expect(entry.round).toBe(3);
     expect(entry.agent).toBe('god');
     expect(entry.adapter).toBe('codex');
     expect(entry.kind).toBe('god_post_reviewer');

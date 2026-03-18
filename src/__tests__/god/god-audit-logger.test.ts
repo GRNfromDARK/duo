@@ -18,7 +18,6 @@ function makeTmpDir(): string {
 function makeEntry(overrides: Partial<Omit<GodAuditEntry, 'seq'>> = {}): Omit<GodAuditEntry, 'seq'> {
   return {
     timestamp: new Date().toISOString(),
-    round: 1,
     decisionType: 'post_coder',
     inputSummary: 'test input',
     outputSummary: 'test output',
@@ -158,9 +157,9 @@ describe('GodAuditLogger', () => {
   it('should produce one audit record per God CLI call (AC-051)', () => {
     const logger = new GodAuditLogger(tmpDir);
     // Simulate 3 God CLI calls
-    logger.append(makeEntry({ decisionType: 'task_init', round: 0 }));
-    logger.append(makeEntry({ decisionType: 'post_coder', round: 1 }));
-    logger.append(makeEntry({ decisionType: 'post_reviewer', round: 1 }));
+    logger.append(makeEntry({ decisionType: 'task_init'}));
+    logger.append(makeEntry({ decisionType: 'post_coder'}));
+    logger.append(makeEntry({ decisionType: 'post_reviewer'}));
 
     const entries = logger.getEntries();
     expect(entries).toHaveLength(3);
@@ -290,8 +289,8 @@ describe('handleLog', () => {
 
   it('should display all audit entries for a session', () => {
     const logger = new GodAuditLogger(sessionDir);
-    logger.append(makeEntry({ decisionType: 'task_init', round: 0 }));
-    logger.append(makeEntry({ decisionType: 'post_coder', round: 1 }));
+    logger.append(makeEntry({ decisionType: 'task_init'}));
+    logger.append(makeEntry({ decisionType: 'post_coder'}));
 
     const output: string[] = [];
     handleLog(sessionId, {}, tmpDir, (msg) => output.push(msg));
@@ -303,9 +302,9 @@ describe('handleLog', () => {
 
   it('should filter entries by --type', () => {
     const logger = new GodAuditLogger(sessionDir);
-    logger.append(makeEntry({ decisionType: 'task_init', round: 0 }));
-    logger.append(makeEntry({ decisionType: 'post_coder', round: 1 }));
-    logger.append(makeEntry({ decisionType: 'convergence', round: 1 }));
+    logger.append(makeEntry({ decisionType: 'task_init'}));
+    logger.append(makeEntry({ decisionType: 'post_coder'}));
+    logger.append(makeEntry({ decisionType: 'convergence'}));
 
     const output: string[] = [];
     handleLog(sessionId, { type: 'post_coder' }, tmpDir, (msg) => output.push(msg));

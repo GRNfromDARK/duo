@@ -22,7 +22,6 @@ describe('PromptLogger', () => {
   test('appendPromptLog writes full prompt entries without truncation', () => {
     const prompt = 'A'.repeat(4096);
     appendPromptLog(sessionDir, {
-      round: 2,
       agent: 'coder',
       adapter: 'claude-code',
       kind: 'coder_round',
@@ -40,7 +39,6 @@ describe('PromptLogger', () => {
     const [line] = fs.readFileSync(logPath, 'utf-8').trim().split('\n');
     const entry = JSON.parse(line) as {
       seq: number;
-      round: number;
       agent: string;
       adapter: string;
       kind: string;
@@ -51,7 +49,6 @@ describe('PromptLogger', () => {
     };
 
     expect(entry.seq).toBe(1);
-    expect(entry.round).toBe(2);
     expect(entry.agent).toBe('coder');
     expect(entry.adapter).toBe('claude-code');
     expect(entry.kind).toBe('coder_round');
@@ -67,7 +64,6 @@ describe('PromptLogger', () => {
   test('PromptLogger preserves sequence across new logger instances', () => {
     const loggerA = new PromptLogger(sessionDir);
     loggerA.append({
-      round: 0,
       agent: 'god',
       adapter: 'codex',
       kind: 'god_task_init',
@@ -77,7 +73,6 @@ describe('PromptLogger', () => {
 
     const loggerB = new PromptLogger(sessionDir);
     loggerB.append({
-      round: 1,
       agent: 'reviewer',
       adapter: 'codex',
       kind: 'reviewer_round',

@@ -30,7 +30,6 @@ describe('classifyInterruptIntent', () => {
     }), {
       userInput: '重新开始，用 Zustand',
       taskGoal: 'build login feature',
-      round: 2,
       sessionDir: '/tmp/test',
       seq: 1,
     });
@@ -47,7 +46,6 @@ describe('classifyInterruptIntent', () => {
     }), {
       userInput: '不要用 Redux，改用 Zustand',
       taskGoal: 'build state management',
-      round: 2,
       sessionDir: '/tmp/test',
       seq: 1,
     });
@@ -64,7 +62,6 @@ describe('classifyInterruptIntent', () => {
     }), {
       userInput: '继续，但是先处理错误',
       taskGoal: 'fix bugs',
-      round: 2,
       sessionDir: '/tmp/test',
       seq: 1,
     });

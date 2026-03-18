@@ -29,7 +29,6 @@ import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
-import { type ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
 import { withRetry, isPaused } from '../../ui/god-fallback.js';
 import { WatchdogService } from '../../god/watchdog.js';
 import { restoreGodSession } from '../../god/god-session-persistence.js';
@@ -62,7 +61,7 @@ afterEach(() => {
 
 /** Create a test Observation. */
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 /** Create a test GodDecisionEnvelope. */
@@ -228,7 +227,6 @@ describe('Scenario 1: Normal God workflow path (AC-1)', () => {
     // EXECUTION_COMPLETE routes to CODING (round increments)
     actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor.getSnapshot().value).toBe('CODING');
-    expect(actor.getSnapshot().context.round).toBe(1);
 
     // ── Step 4: Round 2 — Coder fixes → Reviewer approves → DONE ──
     actor.send({ type: 'CODE_COMPLETE', output: 'function login() { validateInput(); /* auth */ }' });
@@ -409,7 +407,6 @@ describe('Scenario 2: God degradation path (AC-2)', () => {
 describe('Scenario 5: duo resume (AC-5)', () => {
   it('restoreGodSession returns null because God adapters are stateless', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'CODING',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -424,7 +421,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
   it('restoreGodSession returns null when godSessionId missing (graceful degradation)', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'CODING',
       currentRole: 'coder',
       // no godSessionId
@@ -436,7 +432,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
   it('restoreGodSession returns null when adapterFactory throws', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'CODING',
       currentRole: 'coder',
       godSessionId: 'god-session-abc',
@@ -456,7 +451,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
 
     // Simulate save
     const state: SessionState = {
-      round: 2,
       status: 'CODING',
       currentRole: 'coder',
       godTaskAnalysis: taskAnalysis,
@@ -468,45 +462,13 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     expect(state.godTaskAnalysis!.confidence).toBe(0.9);
   });
 
-  it('convergenceLog persisted and restored from SessionState', () => {
-    const convergenceLog: ConvergenceLogEntry[] = [
-      {
-        round: 0,
-        timestamp: '2026-03-12T00:00:00Z',
-        classification: 'changes_requested',
-        shouldTerminate: false,
-        blockingIssueCount: 2,
-        criteriaProgress: [{ criterion: 'Tests pass', satisfied: false }],
-        summary: 'Round 0: changes_requested, blocking=2',
-      },
-      {
-        round: 1,
-        timestamp: '2026-03-12T00:01:00Z',
-        classification: 'approved',
-        shouldTerminate: true,
-        blockingIssueCount: 0,
-        criteriaProgress: [{ criterion: 'Tests pass', satisfied: true }],
-        summary: 'Round 1: approved, blocking=0',
-      },
-    ];
-
-    const state: SessionState = {
-      round: 2,
-      status: 'god_deciding',
-      currentRole: 'coder',
-      godConvergenceLog: convergenceLog,
-    };
-
-    expect(state.godConvergenceLog).toHaveLength(2);
-    expect(state.godConvergenceLog![1].classification).toBe('approved');
-    expect(state.godConvergenceLog![1].shouldTerminate).toBe(true);
-  });
+  // convergenceLog test removed (round removal).
 
   it('full resume flow: RESUMING → CODING with restored God state', () => {
     // Step 1: Serialize workflow state using new event flow
-    const actor1 = startActor({ maxRounds: 5 });
+    const actor1 = startActor({});
     actor1.send({ type: 'START_TASK', prompt: 'original task' });
-    actor1.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 5 });
+    actor1.send({ type: 'TASK_INIT_COMPLETE'});
     // CODING → OBSERVING → GOD_DECIDING → EXECUTING → REVIEWING
     actor1.send({ type: 'CODE_COMPLETE', output: 'v1' });
     actor1.send({ type: 'OBSERVATIONS_READY', observations: [makeObs('work_output', 'coder')] });
@@ -522,7 +484,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     actor1.send({ type: 'DECISION_READY', envelope: envelopeToCoder });
     actor1.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
     expect(actor1.getSnapshot().value).toBe('CODING');
-    expect(actor1.getSnapshot().context.round).toBe(1);
 
     const snapshot = actor1.getPersistedSnapshot();
     actor1.stop();
@@ -532,8 +493,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     actor2.start();
 
     expect(actor2.getSnapshot().value).toBe('CODING');
-    expect(actor2.getSnapshot().context.round).toBe(1);
-    expect(actor2.getSnapshot().context.maxRounds).toBe(5);
     expect(actor2.getSnapshot().context.taskPrompt).toBe('original task');
 
     // Step 3: Continue workflow from restored state → DONE

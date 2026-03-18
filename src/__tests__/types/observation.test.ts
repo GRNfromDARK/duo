@@ -47,7 +47,6 @@ describe('ObservationSchema', () => {
     summary: 'Coder produced implementation',
     severity: 'info',
     timestamp: '2026-03-13T10:00:00.000Z',
-    round: 1,
   };
 
   // AC-1: Zod schema can validate all 13 observation types
@@ -113,13 +112,7 @@ describe('ObservationSchema', () => {
     expect(() => ObservationSchema.parse({ ...validObservation, severity: 'critical' })).toThrow();
   });
 
-  it('should reject non-integer round', () => {
-    expect(() => ObservationSchema.parse({ ...validObservation, round: 1.5 })).toThrow();
-  });
-
-  it('should reject negative round', () => {
-    expect(() => ObservationSchema.parse({ ...validObservation, round: -1 })).toThrow();
-  });
+  // Round validation tests removed (round removal).
 });
 
 describe('isWorkObservation', () => {
@@ -129,7 +122,6 @@ describe('isWorkObservation', () => {
     summary: 'test',
     severity: 'info',
     timestamp: '2026-03-13T10:00:00.000Z',
-    round: 1,
   });
 
   // AC-3: empty_output is NOT classified as work observation
@@ -174,7 +166,6 @@ describe('AC-2: quota_exhausted default severity', () => {
       type: 'quota_exhausted',
       summary: 'You are out of extra usage',
       timestamp: '2026-03-13T10:00:00.000Z',
-      round: 1,
     });
     expect(obs.severity).toBe('error');
     expect(obs.type).toBe('quota_exhausted');
@@ -187,7 +178,6 @@ describe('AC-2: quota_exhausted default severity', () => {
       summary: 'You are out of extra usage',
       severity: 'fatal',
       timestamp: '2026-03-13T10:00:00.000Z',
-      round: 1,
     });
     expect(obs.severity).toBe('fatal');
   });

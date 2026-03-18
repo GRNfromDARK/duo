@@ -28,8 +28,6 @@ const mockAppendAuditLog = vi.mocked(appendAuditLog);
 function makePromptContext(overrides: Partial<PromptContext> = {}): PromptContext {
   return {
     taskType: 'code',
-    round: 1,
-    maxRounds: 5,
     taskGoal: 'Implement user authentication',
     ...overrides,
   };
@@ -123,7 +121,6 @@ describe('FR-003b: Reviewer-Driven prompt assembly priority', () => {
   test('AC-3: unresolvedIssues appear as top-priority TODO list in coder prompt', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 3,
       unresolvedIssues: [
         'Missing null check on user input',
         'SQL injection vulnerability in query builder',
@@ -143,7 +140,6 @@ describe('FR-003b: Reviewer-Driven prompt assembly priority', () => {
   test('unresolvedIssues appear before suggestions in prompt', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 3,
       unresolvedIssues: ['Fix null check'],
       suggestions: ['Consider using optional chaining'],
     });
@@ -171,26 +167,7 @@ describe('FR-003b: Reviewer-Driven prompt assembly priority', () => {
     expect(prompt).toContain('Build REST API');
   });
 
-  test('round info is included', () => {
-    const ctx = makePromptContext({ round: 3, maxRounds: 10 });
-    const prompt = generateCoderPrompt(ctx);
-
-    expect(prompt).toContain('3');
-    expect(prompt).toContain('10');
-  });
-
-  test('convergenceLog trend is included when provided', () => {
-    const ctx = makePromptContext({
-      convergenceLog: [
-        { round: 1, timestamp: new Date().toISOString(), classification: 'changes_requested', shouldTerminate: false, blockingIssueCount: 5, criteriaProgress: [], summary: 'blocking=5' },
-        { round: 2, timestamp: new Date().toISOString(), classification: 'approved', shouldTerminate: false, blockingIssueCount: 0, criteriaProgress: [], summary: 'blocking=0' },
-      ],
-    });
-    const prompt = generateCoderPrompt(ctx);
-
-    // Should mention convergence trend
-    expect(prompt.toLowerCase()).toMatch(/trend|progress|convergence|improving/);
-  });
+  // Round info and convergenceLog tests removed (round removal).
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -256,8 +233,6 @@ describe('generateReviewerPrompt', () => {
   test('generates reviewer prompt with coder output', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Build API',
       lastCoderOutput: 'Added endpoint',
     });
@@ -270,8 +245,6 @@ describe('generateReviewerPrompt', () => {
   test('uses proposal review instructions for review-type phases', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'compound',
-      round: 1,
-      maxRounds: 10,
       taskGoal: 'Improve UI experience',
       lastCoderOutput: '## Proposed improvements\n1. StatusBar layout\n2. Mouse scroll\n3. Scrollbar',
       phaseId: 'phase-2',
@@ -289,8 +262,6 @@ describe('generateReviewerPrompt', () => {
   test('uses standard code review instructions for code-type phases', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'compound',
-      round: 2,
-      maxRounds: 10,
       taskGoal: 'Improve UI experience',
       lastCoderOutput: 'Implemented StatusBar changes',
       phaseId: 'phase-3',
@@ -305,8 +276,6 @@ describe('generateReviewerPrompt', () => {
     for (const phaseType of ['explore', 'review', 'code'] as const) {
       const prompt = generateReviewerPrompt({
         taskType: 'compound',
-        round: 1,
-        maxRounds: 10,
         taskGoal: 'Test task',
         phaseId: 'phase-1',
         phaseType,
@@ -325,14 +294,13 @@ describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
   test('injects Reviewer Feedback section when isPostReviewerRouting is true', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 3,
       isPostReviewerRouting: true,
       lastReviewerOutput: '[CHANGES_REQUESTED]\n1. Blocking: Missing null check on line 42\n2. The function does not handle edge case X',
       instruction: 'Fix the issues identified by the Reviewer',
     });
     const prompt = generateCoderPrompt(ctx);
 
-    expect(prompt).toContain('## Reviewer Feedback (Round 3)');
+    expect(prompt).toContain('## Reviewer Feedback');
     expect(prompt).toContain('Missing null check on line 42');
     expect(prompt).toContain('does not handle edge case X');
   });
@@ -340,7 +308,6 @@ describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
   test('Reviewer Feedback appears after God Instruction and before Required Fixes', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 2,
       isPostReviewerRouting: true,
       lastReviewerOutput: 'Reviewer analysis here',
       instruction: 'God instruction here',
@@ -359,7 +326,6 @@ describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
   test('does NOT inject Reviewer Feedback when isPostReviewerRouting is false', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 2,
       isPostReviewerRouting: false,
       lastReviewerOutput: 'Stale reviewer output from previous round',
     });
@@ -372,7 +338,6 @@ describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
   test('does NOT inject Reviewer Feedback when isPostReviewerRouting is undefined (backward compat)', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 1,
       lastReviewerOutput: 'Some reviewer output',
     });
     const prompt = generateCoderPrompt(ctx);
@@ -383,7 +348,6 @@ describe('Reviewer Feedback Direct Forwarding (Change 1)', () => {
   test('strips tool markers from reviewer output before injection', () => {
     const ctx = makePromptContext({
       taskType: 'code',
-      round: 2,
       isPostReviewerRouting: true,
       lastReviewerOutput: '[Read] src/index.ts\n[Bash] npm test\nThe code has a bug on line 10.\n[CHANGES_REQUESTED]',
     });

@@ -26,7 +26,6 @@ describe('Card E.2: TUI clarification', () => {
   describe('clarification observation creation', () => {
     it('creates clarification_answer observation from user input', () => {
       const obs = createObservation('clarification_answer', 'human', 'Please modify the auth module', {
-        round: 3,
         severity: 'info',
         rawRef: 'Please modify the auth module',
       });

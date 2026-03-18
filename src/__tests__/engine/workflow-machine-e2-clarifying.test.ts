@@ -34,7 +34,7 @@ function sendStartAndSkipInit(actor: ReturnType<typeof startActor>, prompt: stri
 }
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {

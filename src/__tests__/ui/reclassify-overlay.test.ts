@@ -18,11 +18,10 @@ import type { ReclassifyOverlayState } from '../../ui/reclassify-overlay.js';
 
 describe('createReclassifyState', () => {
   it('should create state with visible=true and correct defaults', () => {
-    const state = createReclassifyState('code', 3);
+    const state = createReclassifyState('code');
 
     expect(state.visible).toBe(true);
     expect(state.currentType).toBe('code');
-    expect(state.currentRound).toBe(3);
     expect(state.selectedType).toBe('code');
     expect(state.availableTypes).toContain('explore');
     expect(state.availableTypes).toContain('code');
@@ -31,12 +30,12 @@ describe('createReclassifyState', () => {
   });
 
   it('should not include compound in available types', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     expect(state.availableTypes).not.toContain('compound');
   });
 
   it('should set selectedType to current type', () => {
-    const state = createReclassifyState('debug', 5);
+    const state = createReclassifyState('debug');
     expect(state.selectedType).toBe('debug');
   });
 });
@@ -82,7 +81,7 @@ describe('canTriggerReclassify — AC-1: Ctrl+R in CODING/REVIEWING/GOD_DECIDING
 
 describe('handleReclassifyKey — arrow keys', () => {
   it('should move selection down with arrow_down', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const codeIndex = state.availableTypes.indexOf('code');
     const { state: next } = handleReclassifyKey(state, 'arrow_down');
 
@@ -90,7 +89,7 @@ describe('handleReclassifyKey — arrow keys', () => {
   });
 
   it('should move selection up with arrow_up', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: moved } = handleReclassifyKey(state, 'arrow_down');
     const { state: next } = handleReclassifyKey(moved, 'arrow_up');
 
@@ -98,7 +97,7 @@ describe('handleReclassifyKey — arrow keys', () => {
   });
 
   it('should wrap around at bottom', () => {
-    const state = createReclassifyState('debug', 1);
+    const state = createReclassifyState('debug');
     // debug is last in the reclassify list
     const { state: next } = handleReclassifyKey(state, 'arrow_down');
 
@@ -106,7 +105,7 @@ describe('handleReclassifyKey — arrow keys', () => {
   });
 
   it('should wrap around at top', () => {
-    const state = createReclassifyState('explore', 1);
+    const state = createReclassifyState('explore');
     // explore is first
     const { state: next } = handleReclassifyKey(state, 'arrow_up');
 
@@ -114,7 +113,7 @@ describe('handleReclassifyKey — arrow keys', () => {
   });
 
   it('should not produce an action on arrow keys', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { action } = handleReclassifyKey(state, 'arrow_down');
 
     expect(action).toBeUndefined();
@@ -123,7 +122,7 @@ describe('handleReclassifyKey — arrow keys', () => {
 
 describe('handleReclassifyKey — number keys', () => {
   it('should select type by number key 1', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: next, action } = handleReclassifyKey(state, '1');
 
     expect(next.selectedType).toBe(state.availableTypes[0]);
@@ -131,7 +130,7 @@ describe('handleReclassifyKey — number keys', () => {
   });
 
   it('should select type by number key 4', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: next, action } = handleReclassifyKey(state, '4');
 
     expect(next.selectedType).toBe(state.availableTypes[3]);
@@ -139,7 +138,7 @@ describe('handleReclassifyKey — number keys', () => {
   });
 
   it('should ignore number keys beyond available types', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: next, action } = handleReclassifyKey(state, '9');
 
     expect(next.selectedType).toBe(state.selectedType);
@@ -149,7 +148,7 @@ describe('handleReclassifyKey — number keys', () => {
 
 describe('handleReclassifyKey — enter (confirm)', () => {
   it('should confirm current selection and return confirm action', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     // Move to a different type first
     const { state: moved } = handleReclassifyKey(state, 'arrow_down');
     const { state: next, action } = handleReclassifyKey(moved, 'enter');
@@ -159,7 +158,7 @@ describe('handleReclassifyKey — enter (confirm)', () => {
   });
 
   it('should confirm with same type (no change)', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { action } = handleReclassifyKey(state, 'enter');
 
     expect(action).toBe('confirm');
@@ -168,7 +167,7 @@ describe('handleReclassifyKey — enter (confirm)', () => {
 
 describe('handleReclassifyKey — escape (cancel) — AC: 取消恢复原状', () => {
   it('should cancel and return cancel action', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: next, action } = handleReclassifyKey(state, 'escape');
 
     expect(action).toBe('cancel');
@@ -176,7 +175,7 @@ describe('handleReclassifyKey — escape (cancel) — AC: 取消恢复原状', (
   });
 
   it('should restore original type on cancel after selection change', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: moved } = handleReclassifyKey(state, 'arrow_down');
     expect(moved.selectedType).not.toBe('code');
 
@@ -187,21 +186,9 @@ describe('handleReclassifyKey — escape (cancel) — AC: 取消恢复原状', (
   });
 });
 
-describe('handleReclassifyKey — AC-2: 已有 RoundRecord 保留', () => {
-  it('should preserve currentRound in state (round records are external)', () => {
-    const state = createReclassifyState('code', 5);
-    // Move to different type and confirm
-    const { state: moved } = handleReclassifyKey(state, 'arrow_down');
-    const { state: next } = handleReclassifyKey(moved, 'enter');
-
-    // currentRound is preserved — reclassify does not reset rounds
-    expect(next.currentRound).toBe(5);
-  });
-});
-
 describe('handleReclassifyKey — unknown keys', () => {
   it('should ignore unknown keys', () => {
-    const state = createReclassifyState('code', 1);
+    const state = createReclassifyState('code');
     const { state: next, action } = handleReclassifyKey(state, 'x');
 
     expect(next).toEqual(state);
@@ -215,7 +202,7 @@ describe('handleReclassifyKey — unknown keys', () => {
 
 describe('BUG-13: createReclassifyState with discuss/compound types', () => {
   it('should fallback selectedType to first available when currentType is discuss', () => {
-    const state = createReclassifyState('discuss' as any, 2);
+    const state = createReclassifyState('discuss' as any);
 
     // selectedType should NOT be 'discuss' since it's not in availableTypes
     expect(state.availableTypes).not.toContain('discuss');
@@ -224,7 +211,7 @@ describe('BUG-13: createReclassifyState with discuss/compound types', () => {
   });
 
   it('should fallback selectedType to first available when currentType is compound', () => {
-    const state = createReclassifyState('compound' as any, 3);
+    const state = createReclassifyState('compound' as any);
 
     expect(state.availableTypes).not.toContain('compound');
     expect(state.selectedType).toBe(state.availableTypes[0]);
@@ -232,13 +219,13 @@ describe('BUG-13: createReclassifyState with discuss/compound types', () => {
   });
 
   it('should still set selectedType to currentType when it is in availableTypes', () => {
-    const state = createReclassifyState('debug', 1);
+    const state = createReclassifyState('debug');
 
     expect(state.selectedType).toBe('debug');
   });
 
   it('should not confirm a no-op reclassify when discuss enters and presses Enter', () => {
-    const state = createReclassifyState('discuss' as any, 2);
+    const state = createReclassifyState('discuss' as any);
     const { state: next, action } = handleReclassifyKey(state, 'enter');
 
     expect(action).toBe('confirm');
@@ -248,7 +235,7 @@ describe('BUG-13: createReclassifyState with discuss/compound types', () => {
   });
 
   it('arrow_down from discuss-fallback navigates predictably', () => {
-    const state = createReclassifyState('discuss' as any, 1);
+    const state = createReclassifyState('discuss' as any);
     // selectedType should be 'explore' (index 0)
     expect(state.selectedType).toBe('explore');
 
@@ -272,7 +259,6 @@ describe('writeReclassifyAudit — AC-3: 重分类事件写入 audit log', () =>
   it('should write a RECLASSIFY entry to god-audit.jsonl', () => {
     writeReclassifyAudit(tmpDir, {
       seq: 10,
-      round: 3,
       fromType: 'code',
       toType: 'debug',
     });
@@ -283,7 +269,6 @@ describe('writeReclassifyAudit — AC-3: 重分类事件写入 audit log', () =>
 
     expect(entry.decisionType).toBe('RECLASSIFY');
     expect(entry.seq).toBe(10);
-    expect(entry.round).toBe(3);
     expect(entry.decision).toEqual({ fromType: 'code', toType: 'debug' });
     expect(entry.inputSummary).toContain('code');
     expect(entry.inputSummary).toContain('debug');
@@ -293,7 +278,6 @@ describe('writeReclassifyAudit — AC-3: 重分类事件写入 audit log', () =>
   it('should include fromType and toType in summaries', () => {
     writeReclassifyAudit(tmpDir, {
       seq: 1,
-      round: 1,
       fromType: 'explore',
       toType: 'review',
     });
@@ -308,8 +292,8 @@ describe('writeReclassifyAudit — AC-3: 重分类事件写入 audit log', () =>
   });
 
   it('should append multiple reclassify entries', () => {
-    writeReclassifyAudit(tmpDir, { seq: 1, round: 1, fromType: 'code', toType: 'debug' });
-    writeReclassifyAudit(tmpDir, { seq: 2, round: 2, fromType: 'debug', toType: 'review' });
+    writeReclassifyAudit(tmpDir, { seq: 1, fromType: 'code', toType: 'debug' });
+    writeReclassifyAudit(tmpDir, { seq: 2, fromType: 'debug', toType: 'review' });
 
     const logPath = join(tmpDir, 'god-audit.jsonl');
     const lines = readFileSync(logPath, 'utf-8').trim().split('\n');

@@ -28,7 +28,7 @@ vi.mock('../../god/god-audit.js', () => ({
 // ── Helpers ──
 
 function makeObs(type: Observation['type'] = 'work_output', source: Observation['source'] = 'coder'): Observation {
-  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString(), round: 0 };
+  return { source, type, summary: `test ${type}`, severity: 'info', timestamp: new Date().toISOString()};
 }
 
 function makeEnvelope(actions: GodDecisionEnvelope['actions'] = []): GodDecisionEnvelope {
@@ -74,8 +74,6 @@ describe('BUG-17 regression: generateReviewerPrompt instruction support', () => 
   it('includes instruction in reviewer prompt when provided', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Build API',
       lastCoderOutput: 'Added endpoint',
       instruction: 'Focus on error handling in the auth module',
@@ -88,8 +86,6 @@ describe('BUG-17 regression: generateReviewerPrompt instruction support', () => 
   it('omits instruction section when instruction is undefined', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Build API',
       lastCoderOutput: 'code output',
     });
@@ -100,8 +96,6 @@ describe('BUG-17 regression: generateReviewerPrompt instruction support', () => 
   it('instruction appears before review instructions (high priority)', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'code',
-      round: 2,
-      maxRounds: 5,
       taskGoal: 'Build API',
       lastCoderOutput: 'Added endpoint',
       instruction: 'User wants to skip security checks',
@@ -117,8 +111,6 @@ describe('BUG-17 regression: generateReviewerPrompt instruction support', () => 
   it('instruction works with compound task and phaseType', () => {
     const prompt = generateReviewerPrompt({
       taskType: 'compound',
-      round: 1,
-      maxRounds: 5,
       taskGoal: 'Multi-phase project',
       lastCoderOutput: 'exploration results',
       phaseId: 'explore-phase',

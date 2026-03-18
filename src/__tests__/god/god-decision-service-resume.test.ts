@@ -20,7 +20,6 @@ describe('Resume prompt slimming — baseline', () => {
       summary: 'Implemented feature X with tests',
       severity: 'info',
       timestamp: '2026-03-16T10:00:00Z',
-      round: 1,
     },
   ];
 
@@ -72,8 +71,6 @@ describe('GodDecisionService.makeDecision with isResuming', () => {
     taskGoal: 'Implement login feature',
     currentPhaseId: 'phase-1',
     currentPhaseType: 'code',
-    round: 3,
-    maxRounds: 10,
     previousDecisions: [],
     availableAdapters: ['claude-code', 'codex'],
     activeRole: 'coder',
@@ -87,7 +84,7 @@ describe('GodDecisionService.makeDecision with isResuming', () => {
     const service = new GodDecisionService(adapter, degradation);
 
     await service.makeDecision(
-      [{ source: 'coder', type: 'work_output', summary: 'code output', severity: 'info', timestamp: '2026-03-16T10:00:00Z', round: 3 }],
+      [{ source: 'coder', type: 'work_output', summary: 'code output', severity: 'info', timestamp: '2026-03-16T10:00:00Z'}],
       baseContext,
       false,
     );
@@ -106,7 +103,7 @@ describe('GodDecisionService.makeDecision with isResuming', () => {
     const service = new GodDecisionService(adapter, degradation);
 
     await service.makeDecision(
-      [{ source: 'coder', type: 'work_output', summary: 'code output', severity: 'info', timestamp: '2026-03-16T10:00:00Z', round: 3 }],
+      [{ source: 'coder', type: 'work_output', summary: 'code output', severity: 'info', timestamp: '2026-03-16T10:00:00Z'}],
       baseContext,
       true,
     );
@@ -118,28 +115,27 @@ describe('GodDecisionService.makeDecision with isResuming', () => {
     expect(prompt).not.toContain('Available Adapters');
     expect(prompt).not.toContain('Last Decision Summary');
     // But SHOULD contain these
-    expect(prompt).toContain('Phase & Round');
+    expect(prompt).toContain('## Phase');
     expect(prompt).toContain('Recent Observations');
     expect(prompt).toContain('Reminder:');
     expect(prompt).toContain('system prompt');
     expect(prompt).toContain('GodDecisionEnvelope');
   });
 
-  it('resume prompt contains phase, round, and active role', async () => {
+  it('resume prompt contains phase and active role', async () => {
     const capturedPrompts: string[] = [];
     const adapter = createMockAdapter(capturedPrompts);
     const degradation = createMockWatchdog();
     const service = new GodDecisionService(adapter, degradation);
 
     await service.makeDecision(
-      [{ source: 'reviewer', type: 'review_output', summary: '[APPROVED] looks good', severity: 'info', timestamp: '2026-03-16T10:00:00Z', round: 3 }],
+      [{ source: 'reviewer', type: 'review_output', summary: '[APPROVED] looks good', severity: 'info', timestamp: '2026-03-16T10:00:00Z'}],
       baseContext,
       true,
     );
 
     const prompt = capturedPrompts[0];
     expect(prompt).toContain('phase-1');
-    expect(prompt).toContain('Round: 3 of 10');
     expect(prompt).toContain('coder');
   });
 });

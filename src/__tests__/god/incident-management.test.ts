@@ -31,7 +31,7 @@ import type { GodAction } from '../../types/god-actions.js';
 
 // ── Helpers ──
 
-const meta = { round: 1, phaseId: 'phase-1', adapter: 'claude-code' };
+const meta = { phaseId: 'phase-1', adapter: 'claude-code' };
 
 function makeTestSessionDir(): string {
   const dir = join(tmpdir(), `incident-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -55,7 +55,6 @@ function makeHandContext(sessionDir: string, overrides?: Partial<HandExecutionCo
     clarificationState: { active: false, question: null },
     interruptResumeStrategy: null,
     adapterConfig: new Map([['coder', 'claude-code'], ['reviewer', 'claude-code'], ['god', 'claude-code']]),
-    round: 1,
     sessionDir,
     cwd: '/tmp',
     ...overrides,
@@ -320,7 +319,6 @@ describe('Incident Audit', () => {
         rawRef: "You're out of extra usage · resets 7pm",
         severity: 'error',
         timestamp: new Date().toISOString(),
-        round: 3,
         phaseId: 'phase-2',
       };
 
@@ -352,12 +350,10 @@ describe('Incident Audit', () => {
           summary: 'switch_adapter: coder → codex',
           severity: 'info',
           timestamp: new Date().toISOString(),
-          round: 3,
         },
       ];
 
       logIncidentAudit(logger, {
-        round: 3,
         incidentObservation: incidentObs,
         envelope,
         executionResults,
@@ -384,7 +380,6 @@ describe('Incident Audit', () => {
       const logger = new GodAuditLogger(sessionDir);
 
       logIncidentAudit(logger, {
-        round: 1,
         incidentObservation: {
           source: 'runtime',
           type: 'auth_failed',
@@ -463,7 +458,7 @@ describe('Existing behavior preservation', () => {
   });
 
   it('createObservation factory still works', () => {
-    const obs = createObservation('quota_exhausted', 'runtime', 'test', { round: 1 });
+    const obs = createObservation('quota_exhausted', 'runtime', 'test', {});
     expect(obs.type).toBe('quota_exhausted');
     expect(obs.severity).toBe('error');
   });

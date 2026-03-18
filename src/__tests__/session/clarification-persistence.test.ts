@@ -9,7 +9,6 @@ import { restoreGodSession } from '../../god/god-session-persistence.js';
 describe('Card E.2: session persistence for clarification', () => {
   it('SessionState supports clarification field', () => {
     const state: SessionState = {
-      round: 3,
       status: 'clarifying',
       currentRole: 'coder',
       clarification: {
@@ -24,7 +23,6 @@ describe('Card E.2: session persistence for clarification', () => {
 
   it('SessionState without clarification is backward compatible', () => {
     const state: SessionState = {
-      round: 3,
       status: 'coding',
       currentRole: 'coder',
     };
@@ -33,7 +31,6 @@ describe('Card E.2: session persistence for clarification', () => {
 
   it('restoreGodSession still returns null (intentionally disabled)', async () => {
     const state: SessionState = {
-      round: 3,
       status: 'clarifying',
       currentRole: 'coder',
       clarification: {

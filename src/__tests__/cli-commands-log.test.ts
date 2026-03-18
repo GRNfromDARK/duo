@@ -13,7 +13,6 @@ function makeEntry(overrides: Partial<GodAuditEntry> = {}): GodAuditEntry {
   return {
     seq: 1,
     timestamp: '2026-03-12T10:00:00.000Z',
-    round: 1,
     decisionType: 'task_init',
     inputSummary: 'test input',
     outputSummary: 'test output',
