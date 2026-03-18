@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 
 const FOLD_THRESHOLD = 10;
 const PREVIEW_LINES = 5;

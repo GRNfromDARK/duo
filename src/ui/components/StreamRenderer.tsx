@@ -10,7 +10,7 @@
  */
 
 import React, { useMemo, useState, useCallback } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 import { parseMarkdown, type MarkdownSegment } from '../markdown-parser.js';
 import { CodeBlock } from './CodeBlock.js';
 import type { DisplayMode } from '../display-mode.js';

@@ -1,5 +1,5 @@
 /**
- * App — Root Ink component for Duo.
+ * App — Root TUI session component for Duo.
  *
  * Two phases:
  * 1. Setup: interactive wizard when args are missing (dir → coder → reviewer → task)
@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Box, useStdout, useApp, useInput } from 'ink';
+import { Box, useStdout, useApp, useInput } from '../../tui/primitives.js';
 import { useMachine } from '@xstate/react';
 import { workflowMachine, detectRoutingConflicts } from '../../engine/workflow-machine.js';
 import type { WorkflowContext } from '../../engine/workflow-machine.js';

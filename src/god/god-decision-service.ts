@@ -285,7 +285,7 @@ Reviewer feedback auto-forwarding:
 - Do NOT repeat or summarize the Reviewer's analysis in your message — the Coder already has the complete original text
 - Your message adds value by providing strategic direction that the Reviewer's analysis alone does not convey
 - Example good message: "Focus on the scroll event propagation issue identified by the Reviewer. The CSS overflow approach is preferred over JS event listeners."
-- Example bad message: "The Reviewer found that Ink uses readable + stdin.read() which captures mouse events. Please fix the scroll..."  (redundant — Coder already sees the full Reviewer text)`;
+- Example bad message: "The Reviewer found that the legacy TUI renderer captures mouse events. Please fix the scroll..."  (redundant — Coder already sees the full Reviewer text)`;
 
 // Phase-following instructions for compound tasks (Bug 11 fix)
 export const PHASE_FOLLOWING_INSTRUCTIONS = `Phase plan compliance:

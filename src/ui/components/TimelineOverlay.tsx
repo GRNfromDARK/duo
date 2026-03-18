@@ -3,7 +3,7 @@
  * Source: FR-022 (AC-072)
  */
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 
 export interface TimelineEvent {
   timestamp: number;

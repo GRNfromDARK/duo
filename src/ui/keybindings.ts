@@ -5,7 +5,7 @@
  * Extracted as pure function for testability, consistent with
  * scroll-state.ts and display-mode.ts patterns.
  */
-import type { Key } from 'ink';
+import type { Key } from '../tui/primitives.js';
 
 export type OverlayType = 'help' | 'context' | 'timeline' | 'search';
 

@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
 
 export type DisagreementAction = 'continue' | 'decide' | 'accept_coder' | 'accept_reviewer';
 

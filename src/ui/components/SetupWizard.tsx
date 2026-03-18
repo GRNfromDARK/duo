@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
 import { DirectoryPicker } from './DirectoryPicker.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import { getInstalledGodAdapters, isSupportedGodAdapterName } from '../../god/god-adapter-config.js';

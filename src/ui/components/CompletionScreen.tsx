@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
-import type { Key } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
+import type { Key } from '../../tui/primitives.js';
 
 export type CompletionMode = 'menu' | 'continue' | 'new-task';
 

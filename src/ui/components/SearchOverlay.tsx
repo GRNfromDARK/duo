@@ -3,7 +3,7 @@
  * Source: FR-022 (AC-072)
  */
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 import type { Message } from '../../types/ui.js';
 import { ROLE_STYLES } from '../../types/ui.js';
 

@@ -1,5 +1,5 @@
 /**
- * PhaseTransitionBanner — Ink component for compound task phase transition.
+ * PhaseTransitionBanner — TUI banner for compound task phase transition.
  * Card C.3: FR-010 (AC-033, AC-034)
  *
  * Shows a 2-second escape window when God triggers a phase transition.
@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
 import {
   createPhaseTransitionBannerState,
   handlePhaseTransitionKeyPress,

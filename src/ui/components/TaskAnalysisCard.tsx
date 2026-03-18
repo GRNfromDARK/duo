@@ -1,5 +1,5 @@
 /**
- * TaskAnalysisCard — Ink component for displaying God's task analysis result.
+ * TaskAnalysisCard — TUI card for displaying God's task analysis result.
  * Card A.3: FR-001a (AC-004, AC-005, AC-006, AC-007)
  *
  * Renders a bordered card with task type selection, countdown timer,
@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import {
   createTaskAnalysisCardState,

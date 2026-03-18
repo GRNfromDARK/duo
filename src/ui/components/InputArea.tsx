@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Box, Text, useInput } from 'ink';
-import type { Key } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
+import type { Key } from '../../tui/primitives.js';
 
 export interface InputAreaProps {
   isLLMRunning: boolean;
@@ -135,8 +135,8 @@ export function processInput(
   }
 
   // Safety filter: ignore raw mouse escape sequences if a terminal passes them
-  // through unexpectedly. Ink strips the ESC (\x1b) prefix from some unknown
-  // sequences, so match both full and stripped forms.
+  // through unexpectedly. Some runtimes strip the ESC (\x1b) prefix from
+  // unknown sequences, so match both full and stripped forms.
   if (input && (/\x1b?\[<\d+;\d+;\d+[Mm]/.test(input) || /\x1b?\[M/.test(input))) {
     return { type: 'noop' };
   }

@@ -8,7 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { Key } from 'ink';
+import type { Key } from '../tui/primitives.js';
 
 // ── Constants ──
 

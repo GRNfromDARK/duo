@@ -1,5 +1,5 @@
 /**
- * ReclassifyOverlay — Ink component for runtime task reclassification.
+ * ReclassifyOverlay — TUI overlay for runtime task reclassification.
  * Card C.3: FR-002a (AC-010, AC-011, AC-012)
  *
  * Full-screen overlay: user selects a new task type via arrow keys / number keys.
@@ -7,7 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
 import type { TaskType } from '../task-analysis-card.js';
 import {
   createReclassifyState,
