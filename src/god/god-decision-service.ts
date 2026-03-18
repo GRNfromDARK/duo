@@ -16,8 +16,7 @@ import type { Observation } from '../types/observation.js';
 import { GodDecisionEnvelopeSchema } from '../types/god-envelope.js';
 import { extractGodJson } from '../parsers/god-json-extractor.js';
 import { collectGodAdapterOutput } from './god-call.js';
-import { WatchdogService, buildEnvelopeFromWatchdogAction } from './watchdog.js';
-import type { WatchdogDecision } from './watchdog.js';
+import { WatchdogService } from './watchdog.js';
 
 // ── Types ──
 
@@ -296,7 +295,14 @@ export const PHASE_FOLLOWING_INSTRUCTIONS = `Phase plan compliance:
 - For review-type phases: you MUST send_to_reviewer before advancing to the next phase — coder proposals alone are not sufficient
 - For ANY phase type: when Coder proposes multiple approaches or solutions, you MUST send_to_reviewer for design evaluation before directing implementation — regardless of whether the phase is explore, debug, or code type
 - Use set_phase ONLY with phase IDs defined in the Phase Plan
-- If the coder's output already covers a later phase's work, still route through the current phase's review before advancing`;
+- If the coder's output already covers a later phase's work, still route through the current phase's review before advancing
+
+Mandatory review before code changes:
+- Before ANY code/debug phase transitions to implementation (Coder will modify files), you MUST send_to_reviewer first so the Reviewer can evaluate the Coder's proposed plan
+- This applies even when Coder proposes only ONE approach — single proposals still need Reviewer validation
+- The correct sequence is: Coder proposes → send_to_reviewer → Reviewer evaluates → then send_to_coder to implement (or iterate if Reviewer requests changes)
+- Do NOT combine set_phase + send_to_coder to skip Reviewer — always route through Reviewer after Coder's proposal before directing implementation
+- accept_task with rationale "reviewer_aligned" is only valid when Reviewer has actually participated and expressed agreement in the current task`;
 
 // Decision reflection: God self-checks before finalizing envelope
 export const DECISION_REFLECTION_INSTRUCTIONS = `Decision reflection — pause and self-check before finalizing high-stakes decisions.
@@ -425,10 +431,8 @@ export class GodDecisionService {
    *
    * Flow:
    * 1. Try God adapter → extract envelope
-   * 2. On failure → ask Watchdog AI to diagnose and decide recovery
-   * 3. Execute Watchdog's decision (retry_fresh / retry_with_hint / construct_envelope / escalate)
-   *
-   * Max AI calls: God(1) + Watchdog(1) + retry(1) = 3.
+   * 2. On failure → Watchdog decides whether to retry (up to 3 times with backoff)
+   * 3. If retries exhausted → return fallback envelope and pause
    */
   async makeDecision(
     observations: Observation[],
@@ -438,20 +442,24 @@ export class GodDecisionService {
     // Step 1: Try God
     const godResult = await this.tryGodCall(observations, context, isResuming);
     if (godResult.success) {
-      this.watchdog.handleGodSuccess();
+      this.watchdog.handleSuccess();
       return godResult.data;
     }
 
-    // Step 2: Ask Watchdog
-    const decision = await this.watchdog.diagnose(
-      godResult.error,
-      godResult.rawOutput,
-      observations,
-      { taskGoal: context.taskGoal, round: context.round, maxRounds: context.maxRounds },
-    );
+    // Step 2: Retry with backoff (Watchdog tracks failures)
+    if (this.watchdog.shouldRetry()) {
+      const backoff = this.watchdog.getBackoffMs();
+      await new Promise(resolve => setTimeout(resolve, backoff));
+      this.adapter.clearSession?.();
+      const retryResult = await this.tryGodCall(observations, context, false);
+      if (retryResult.success) {
+        this.watchdog.handleSuccess();
+        return retryResult.data;
+      }
+    }
 
-    // Step 3: Execute Watchdog's decision (one retry max)
-    return this.executeWatchdogDecision(decision, observations, context);
+    // Step 3: Retries exhausted or retry failed → fallback
+    return buildFallbackEnvelope(context);
   }
 
   private async tryGodCall(
@@ -504,94 +512,4 @@ export class GodDecisionService {
     };
   }
 
-  private async executeWatchdogDecision(
-    decision: WatchdogDecision,
-    observations: Observation[],
-    context: GodDecisionContext,
-  ): Promise<GodDecisionEnvelope> {
-    switch (decision.decision) {
-      case 'retry_fresh': {
-        this.adapter.clearSession?.();
-        const result = await this.tryGodCall(observations, context, false);
-        if (result.success) {
-          this.watchdog.handleGodSuccess();
-          return result.data;
-        }
-        return buildFallbackEnvelope(context);
-      }
-
-      case 'retry_with_hint': {
-        this.adapter.clearSession?.();
-        const result = await this.tryGodCallWithHint(
-          decision.hint ?? 'Please check your output format.',
-          observations,
-          context,
-        );
-        if (result.success) {
-          this.watchdog.handleGodSuccess();
-          return result.data;
-        }
-        return buildFallbackEnvelope(context);
-      }
-
-      case 'construct_envelope':
-        return buildEnvelopeFromWatchdogAction(decision, {
-          taskGoal: context.taskGoal,
-          currentPhaseId: context.currentPhaseId,
-        });
-
-      case 'escalate':
-      default:
-        return buildFallbackEnvelope(context);
-    }
-  }
-
-  private async tryGodCallWithHint(
-    hint: string,
-    observations: Observation[],
-    context: GodDecisionContext,
-  ): Promise<GodCallResult> {
-    const userPrompt = buildUserPrompt(observations, context);
-    const hintPrompt = `${userPrompt}\n\n[FORMAT CORRECTION] ${hint}\n\nPlease output a corrected GodDecisionEnvelope JSON block.`;
-
-    let rawOutput: string;
-    try {
-      rawOutput = await collectGodAdapterOutput({
-        adapter: this.adapter,
-        prompt: hintPrompt,
-        systemPrompt: SYSTEM_PROMPT,
-        timeoutMs: GOD_TIMEOUT_MS,
-        model: this.model,
-        logging: {
-          sessionDir: context.sessionDir,
-          round: context.round,
-          kind: 'god_unified_decision',
-          meta: { attempt: 'watchdog_retry', hint },
-        },
-      });
-    } catch (err) {
-      return {
-        success: false,
-        error: {
-          kind: 'adapter_error',
-          message: err instanceof Error ? err.message : String(err),
-        },
-        rawOutput: null,
-      };
-    }
-
-    const result = extractGodJson(rawOutput, GodDecisionEnvelopeSchema);
-    if (result && result.success) {
-      return { success: true, data: result.data };
-    }
-
-    return {
-      success: false,
-      error: {
-        kind: 'schema_validation',
-        message: result ? result.error : 'No JSON found',
-      },
-      rawOutput,
-    };
-  }
 }

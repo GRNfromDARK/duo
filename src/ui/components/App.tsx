@@ -311,21 +311,21 @@ function SessionRunner({
   const outputManagerRef = useRef(new OutputStreamManager());
   const godAuditLoggerRef = useRef<GodAuditLogger | null>(null);
   // GodRetryController wraps WatchdogService for withGodFallback.
-  // On failure, asks Watchdog AI to diagnose and decide retry/fallback.
+  // On failure, uses simple retry+backoff+pause logic.
   const godRetryControllerRef = useRef<GodRetryController>({
     isGodAvailable: () => watchdogRef.current.isGodAvailable(),
-    handleGodSuccess: () => watchdogRef.current.handleGodSuccess(),
-    handleGodFailure: async (error) => {
-      const decision = await watchdogRef.current.diagnose(
-        error, null, [],
-        { taskGoal: config.task, round: 0, maxRounds: 1 },
-      );
-      const shouldRetry = decision.decision === 'retry_fresh' || decision.decision === 'retry_with_hint';
+    handleGodSuccess: () => watchdogRef.current.handleSuccess(),
+    handleGodFailure: async (_error) => {
+      const shouldRetry = watchdogRef.current.shouldRetry();
+      if (shouldRetry) {
+        const backoff = watchdogRef.current.getBackoffMs();
+        await new Promise(resolve => setTimeout(resolve, backoff));
+      }
       return {
         retry: shouldRetry,
         notification: shouldRetry
-          ? { type: 'retrying' as const, message: `◈ Watchdog: ${decision.analysis}` }
-          : { type: 'god_disabled' as const, message: `⚠ Watchdog: ${decision.analysis}` },
+          ? { type: 'retrying' as const, message: `Watchdog: retrying (attempt ${watchdogRef.current.getConsecutiveFailures()})` }
+          : { type: 'god_disabled' as const, message: `Watchdog: God paused after ${WatchdogService.MAX_RETRIES} failures` },
       };
     },
   });
@@ -352,14 +352,8 @@ function SessionRunner({
   const lastWorkerRoleRef = useRef<'coder' | 'reviewer'>('coder');
   /** Tracks whether Reviewer feedback has been consumed by Coder (Change 5) */
   const reviewerFeedbackPendingRef = useRef<boolean>(false);
-  // Watchdog: separate adapter instance (no shared session state with God)
-  const watchdogAdapterRef = useRef<GodAdapter>(createGodAdapter(config.god));
-  const watchdogRef = useRef(
-    new WatchdogService(watchdogAdapterRef.current, {
-      model: config.godModel,
-      restoredState: resumeSession?.state.degradationState,
-    }),
-  );
+  // Watchdog: simple retry+backoff+pause (no adapter needed)
+  const watchdogRef = useRef(new WatchdogService());
   // Card D.1: unified God decision service instance (uses Watchdog for error recovery)
   const godDecisionServiceRef = useRef(
     new GodDecisionService(godAdapterRef.current, watchdogRef.current, config.godModel),
@@ -622,9 +616,9 @@ function SessionRunner({
             round: 0,
             decisionType: 'TASK_INIT_FAILURE',
             inputSummary: config.task,
-            outputSummary: `Degraded to v1: watchdog failures=${watchdogRef.current.getState().consecutiveFailures}`,
+            outputSummary: `Degraded to v1: watchdog failures=${watchdogRef.current.getConsecutiveFailures()}`,
             latencyMs: Date.now() - startTime,
-            decision: { godDisabled: watchdogRef.current.getState().godDisabled },
+            decision: { godDisabled: watchdogRef.current.isPaused() },
           });
         }
 
@@ -659,7 +653,12 @@ function SessionRunner({
           : {}),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: watchdogRef.current.serializeState(),
+        degradationState: {
+          level: watchdogRef.current.isPaused() ? 'L4' as const : 'L1' as const,
+          consecutiveFailures: watchdogRef.current.getConsecutiveFailures(),
+          godDisabled: watchdogRef.current.isPaused(),
+          fallbackActive: watchdogRef.current.isPaused(),
+        },
         currentPhaseId,
         // Card E.2: persist clarification context for duo resume
         ...(stateValue === 'CLARIFYING' ? {
@@ -1228,12 +1227,8 @@ function SessionRunner({
         content: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s. ${manualWaitingMsg}`,
         timestamp: Date.now(),
       });
-      // Record timeout in Watchdog state (fire-and-forget since we're in a sync setTimeout callback)
-      void watchdogRef.current.diagnose(
-        { kind: 'timeout', message: `God decision timed out after ${GOD_DECIDING_TIMEOUT_MS / 1000}s` },
-        null, [],
-        { taskGoal: config.task, round: 0, maxRounds: 1 },
-      );
+      // Record timeout in Watchdog state
+      watchdogRef.current.shouldRetry();
       send({ type: 'MANUAL_FALLBACK_REQUIRED' } as any);
     }, GOD_DECIDING_TIMEOUT_MS);
 
@@ -1686,7 +1681,12 @@ function SessionRunner({
         })(),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: watchdogRef.current.serializeState(),
+        degradationState: {
+          level: watchdogRef.current.isPaused() ? 'L4' as const : 'L1' as const,
+          consecutiveFailures: watchdogRef.current.getConsecutiveFailures(),
+          godDisabled: watchdogRef.current.isPaused(),
+          fallbackActive: watchdogRef.current.isPaused(),
+        },
         currentPhaseId,
       });
     } catch {
@@ -1701,7 +1701,6 @@ function SessionRunner({
         coderAdapterRef.current,
         reviewerAdapterRef.current,
         godAdapterRef.current,
-        watchdogAdapterRef.current,
       ],
       beforeExit: saveStateForExit,
       onExit: () => exit(),
@@ -2025,7 +2024,7 @@ function SessionRunner({
         reviewerAdapter: config.reviewer,
         coderModel: config.coderModel,
         reviewerModel: config.reviewerModel,
-        degradationLevel: watchdogRef.current.serializeState().level,
+        degradationLevel: watchdogRef.current.isPaused() ? 'L4' : 'L1',
         godLatency,
       }}
       contextData={contextData}

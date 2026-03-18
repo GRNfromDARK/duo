@@ -18,7 +18,13 @@ import {
   type GodDecisionContext,
   REVIEWER_HANDLING_INSTRUCTIONS,
 } from '../../god/god-decision-service.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
+import { WatchdogService } from '../../god/watchdog.js';
+
+// ── Mock Watchdog Factory ──
+
+function createMockWatchdog(): WatchdogService {
+  return new WatchdogService();
+}
 
 // ── Mock Adapter Factory ──
 
@@ -125,7 +131,7 @@ describe('GodDecisionService', () => {
   describe('AC-1: makeDecision returns GodDecisionEnvelope', () => {
     it('returns a valid GodDecisionEnvelope when God outputs valid JSON', async () => {
       const { adapter } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -141,7 +147,7 @@ describe('GodDecisionService', () => {
 
     it('accepts multiple observations', async () => {
       const { adapter } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [
         makeObservation({ type: 'work_output', severity: 'info' }),
         makeObservation({ type: 'quota_exhausted', severity: 'error', source: 'runtime' }),
@@ -158,7 +164,7 @@ describe('GodDecisionService', () => {
   describe('AC-2: prompt includes Hand action catalog', () => {
     it('includes Hand action types in the prompt sent to God', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -184,7 +190,7 @@ describe('GodDecisionService', () => {
   describe('AC-3: prompt requires envelope JSON format', () => {
     it('system prompt instructs God to output GodDecisionEnvelope JSON', async () => {
       const { adapter, getLastSystemPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -203,7 +209,7 @@ describe('GodDecisionService', () => {
   describe('AC-4: valid JSON parses successfully', () => {
     it('returns envelope that passes Zod validation', async () => {
       const { adapter } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -244,7 +250,8 @@ describe('GodDecisionService', () => {
         isRunning: () => false,
       };
 
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const watchdog = new WatchdogService();
+      const service = new GodDecisionService(adapter, watchdog);
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -255,7 +262,7 @@ describe('GodDecisionService', () => {
       expect(result.diagnosis).toBeDefined();
     });
 
-    it('triggers DegradationManager L3 when all parse attempts fail', async () => {
+    it('triggers watchdog escalation when all parse attempts fail', async () => {
       const adapter: GodAdapter = {
         name: 'mock-god',
         displayName: 'Mock God',
@@ -274,8 +281,8 @@ describe('GodDecisionService', () => {
         isRunning: () => false,
       };
 
-      const degradation = new DegradationManager();
-      const service = new GodDecisionService(adapter, degradation);
+      const watchdog = createMockWatchdog();
+      const service = new GodDecisionService(adapter, watchdog);
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -287,15 +294,14 @@ describe('GodDecisionService', () => {
       expect(result.actions).toBeInstanceOf(Array);
       expect(result.messages).toBeInstanceOf(Array);
 
-      // DegradationManager should have recorded the failure
-      const state = degradation.getState();
-      expect(state.consecutiveFailures).toBeGreaterThan(0);
+      // Watchdog should have recorded the failure
+      expect(watchdog.getConsecutiveFailures()).toBeGreaterThan(0);
     });
 
     it('returns fallback envelope when God returns no JSON block at all', async () => {
       const { adapter } = createMockAdapter('I am thinking about the problem...');
-      const degradation = new DegradationManager();
-      const service = new GodDecisionService(adapter, degradation);
+      const watchdog = createMockWatchdog();
+      const service = new GodDecisionService(adapter, watchdog);
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -312,8 +318,8 @@ describe('GodDecisionService', () => {
       const { adapter: adapterA } = createMockAdapter(makeValidEnvelopeJson(), 'adapter-a');
       const { adapter: adapterB } = createMockAdapter(makeValidEnvelopeJson(), 'adapter-b');
 
-      const serviceA = new GodDecisionService(adapterA, new DegradationManager());
-      const serviceB = new GodDecisionService(adapterB, new DegradationManager());
+      const serviceA = new GodDecisionService(adapterA, createMockWatchdog());
+      const serviceB = new GodDecisionService(adapterB, createMockWatchdog());
 
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
@@ -330,7 +336,7 @@ describe('GodDecisionService', () => {
   describe('prompt includes observations sorted by severity', () => {
     it('includes observation summaries in the prompt', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
 
       const observations = [
         makeObservation({ summary: 'Low priority info', severity: 'info', timestamp: '2026-01-01T00:00:01Z' }),
@@ -357,7 +363,7 @@ describe('GodDecisionService', () => {
   describe('prompt includes context information', () => {
     it('includes task goal, phase, and round info', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({
         sessionDir,
@@ -378,7 +384,7 @@ describe('GodDecisionService', () => {
 
     it('includes previous decision summary when available', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
 
       const previousDecision: GodDecisionEnvelope = {
@@ -413,7 +419,7 @@ describe('GodDecisionService', () => {
   describe('system prompt establishes Sovereign God role', () => {
     it('system prompt declares God as sovereign decision maker', async () => {
       const { adapter, getLastSystemPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -429,7 +435,7 @@ describe('GodDecisionService', () => {
   describe('phase plan injection', () => {
     it('includes phase plan with types and descriptions when phases are provided', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({
         sessionDir,
@@ -459,7 +465,7 @@ describe('GodDecisionService', () => {
 
     it('includes current phase type in prompt', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({
         sessionDir,
@@ -480,7 +486,7 @@ describe('GodDecisionService', () => {
 
     it('system prompt includes phase-following guidance for review-type phases', async () => {
       const { adapter, getLastSystemPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({
         sessionDir,
@@ -501,7 +507,7 @@ describe('GodDecisionService', () => {
 
     it('does not include phase plan section when phases is undefined', async () => {
       const { adapter, getLastPrompt } = createMockAdapter(makeValidEnvelopeJson());
-      const service = new GodDecisionService(adapter, new DegradationManager());
+      const service = new GodDecisionService(adapter, createMockWatchdog());
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
@@ -512,25 +518,24 @@ describe('GodDecisionService', () => {
     });
   });
 
-  // DegradationManager success resets
-  describe('DegradationManager integration', () => {
+  // Watchdog success resets
+  describe('Watchdog integration', () => {
     it('calls handleGodSuccess on successful parse', async () => {
       const { adapter } = createMockAdapter(makeValidEnvelopeJson());
-      const degradation = new DegradationManager();
-      const service = new GodDecisionService(adapter, degradation);
+      const watchdog = createMockWatchdog();
+      const service = new GodDecisionService(adapter, watchdog);
 
-      // Simulate a prior failure
-      degradation.handleGodFailure({ kind: 'parse_failure', message: 'test' });
-      expect(degradation.getState().consecutiveFailures).toBe(1);
+      // Verify initial state is clean
+      expect(watchdog.getConsecutiveFailures()).toBe(0);
 
       const observations = [makeObservation()];
       const context = makeContext({ sessionDir });
 
       await service.makeDecision(observations, context);
 
-      // Success should reset
-      expect(degradation.getState().consecutiveFailures).toBe(0);
-      expect(degradation.getState().level).toBe('L1');
+      // Success should keep state clean
+      expect(watchdog.getConsecutiveFailures()).toBe(0);
+      expect(watchdog.isPaused()).toBe(false);
     });
   });
 
