@@ -315,6 +315,7 @@ Each step maintains all tests passing. Test updates are folded into each step (n
 - Remove `convergenceRef` from `src/ui/components/App.tsx`
 - Change `crossValidate()` in `src/god/consistency-checker.ts` to audit-only (log divergence, don't override God)
 - Update tests:
+  - `src/__tests__/god/consistency-checker.test.ts` — update all `source: 'local'` expectations to `source: 'god'`
   - `src/__tests__/ui/god-convergence-evaluating.test.ts` — remove ConvergenceService fallback tests
   - `src/__tests__/ui/c3-integration.test.ts` — remove convergence service references
   - `src/__tests__/god/bug-14-15-16-regression.test.ts` — update convergence expectations
