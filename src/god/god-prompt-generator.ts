@@ -88,8 +88,6 @@ const DISCUSS_INSTRUCTIONS = `## Instructions
 - Evaluate the options and weigh their implications.
 - Provide a well-reasoned recommendation.`;
 
-const IMPLEMENTATION_KEYWORDS = /(?:请|去|要)?(?:实现|开发|编写|修改)|implement\s+(?:the|this|a)|build\s+(?:the|this|a)|write\s+(?:the|this|code)|(?:create|fix|develop|modify)\s+(?:the|this|a)\s+(?:code|implementation|feature|function|module)/i;
-
 function getStrategyInstructions(taskType: string, proposeOnly = false): string {
   switch (taskType) {
     case 'explore': return EXPLORE_INSTRUCTIONS;
@@ -99,19 +97,6 @@ function getStrategyInstructions(taskType: string, proposeOnly = false): string 
     case 'discuss': return DISCUSS_INSTRUCTIONS;
     default: return proposeOnly ? CODE_PROPOSE_INSTRUCTIONS : CODE_INSTRUCTIONS;
   }
-}
-
-function resolveEffectiveType(
-  phaseType: string | undefined,
-  instruction: string | undefined,
-): string {
-  if (!instruction || !phaseType) return phaseType ?? 'code';
-
-  if ((phaseType === 'explore' || phaseType === 'discuss') && IMPLEMENTATION_KEYWORDS.test(instruction)) {
-    return 'code';
-  }
-
-  return phaseType;
 }
 
 // ── Reviewer Issue Extraction ──
@@ -144,12 +129,9 @@ export function extractBlockingIssues(reviewerOutput: string): string[] {
  * Optionally writes a summary to audit log (FR-003c / AC-015).
  */
 export function generateCoderPrompt(ctx: PromptContext, audit?: AuditOptions): string {
-  const rawPhaseType = ctx.taskType === 'compound' && ctx.phaseType
+  const effectiveType = ctx.taskType === 'compound' && ctx.phaseType
     ? ctx.phaseType
     : ctx.taskType;
-  const effectiveType = ctx.taskType === 'compound'
-    ? resolveEffectiveType(rawPhaseType, ctx.instruction)
-    : rawPhaseType;
 
   const sections: string[] = [];
 

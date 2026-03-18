@@ -248,37 +248,6 @@ describe('FR-003c: Prompt quality assurance', () => {
   });
 });
 
-describe('generateCoderPrompt (phase conflict resolution)', () => {
-  test('uses code instructions when God instruction implies implementation in explore phase', () => {
-    const prompt = generateCoderPrompt({
-      taskType: 'compound',
-      round: 3,
-      maxRounds: 10,
-      taskGoal: 'build feature',
-      phaseId: 'phase-1',
-      phaseType: 'explore',
-      instruction: '同意，请开始实现',
-    });
-
-    expect(prompt).not.toContain('Do NOT modify any files');
-    expect(prompt).toContain('Implement');
-  });
-
-  test('keeps explore instructions when God instruction is non-conflicting', () => {
-    const prompt = generateCoderPrompt({
-      taskType: 'compound',
-      round: 1,
-      maxRounds: 10,
-      taskGoal: 'analyze codebase',
-      phaseId: 'phase-1',
-      phaseType: 'explore',
-      instruction: '请更深入地分析数据库模块',
-    });
-
-    expect(prompt).toContain('Do NOT modify any files');
-  });
-});
-
 // ══════════════════════════════════════════════════════════════════
 // Reviewer Prompt
 // ══════════════════════════════════════════════════════════════════
@@ -478,61 +447,3 @@ describe('extractBlockingIssues (Change 2)', () => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════════
-// IMPLEMENTATION_KEYWORDS narrowing (Change 8)
-// ══════════════════════════════════════════════════════════════════
-
-describe('IMPLEMENTATION_KEYWORDS narrowing (Change 8)', () => {
-  test('explore phase with "fix the gap" instruction stays explore type', () => {
-    const ctx = makePromptContext({
-      taskType: 'compound',
-      phaseId: 'phase-1',
-      phaseType: 'explore',
-      instruction: 'Please fix the gap in Claude Code discovery',
-    });
-    const prompt = generateCoderPrompt(ctx);
-
-    // Should NOT contain code-type instructions
-    expect(prompt).not.toContain('Build working solutions');
-    // Should contain explore-type instructions
-    expect(prompt).toContain('Do NOT modify any files');
-  });
-
-  test('explore phase with "code discovery" instruction stays explore type', () => {
-    const ctx = makePromptContext({
-      taskType: 'compound',
-      phaseId: 'phase-1',
-      phaseType: 'explore',
-      instruction: 'Continue code discovery for all providers',
-    });
-    const prompt = generateCoderPrompt(ctx);
-
-    expect(prompt).not.toContain('Build working solutions');
-    expect(prompt).toContain('Do NOT modify any files');
-  });
-
-  test('explore phase with "implement the fix" instruction switches to code type', () => {
-    const ctx = makePromptContext({
-      taskType: 'compound',
-      phaseId: 'phase-1',
-      phaseType: 'explore',
-      instruction: 'Implement the fix for this issue',
-    });
-    const prompt = generateCoderPrompt(ctx);
-
-    expect(prompt).toContain('Build working solutions');
-    expect(prompt).not.toContain('Do NOT modify any files');
-  });
-
-  test('explore phase with Chinese "请实现" instruction switches to code type', () => {
-    const ctx = makePromptContext({
-      taskType: 'compound',
-      phaseId: 'phase-1',
-      phaseType: 'explore',
-      instruction: '请实现这个功能',
-    });
-    const prompt = generateCoderPrompt(ctx);
-
-    expect(prompt).toContain('Build working solutions');
-  });
-});
