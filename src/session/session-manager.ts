@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { SessionConfig } from '../types/session.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
-import type { ConvergenceLogEntry } from '../god/god-convergence.js';
+import type { ConvergenceLogEntry } from '../god/god-prompt-generator.js';
 import { PROMPT_LOG_FILENAME } from './prompt-log.js';
 
 export interface SessionMetadata {

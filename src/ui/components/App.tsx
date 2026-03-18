@@ -21,7 +21,6 @@ import { MainLayout } from './MainLayout.js';
 import type { WorkflowStateHint } from './MainLayout.js';
 import type { WorkflowStatus } from './StatusBar.js';
 import { SetupWizard } from './SetupWizard.js';
-import { createRoundSummaryMessage } from '../round-summary.js';
 import type { SessionConfig } from '../../types/session.js';
 import type { DetectedCLI } from '../../adapters/detect.js';
 import type { CLIAdapter, OutputChunk } from '../../types/adapter.js';
@@ -43,7 +42,7 @@ import { withRetry, isPaused } from '../god-fallback.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { TaskAnalysisCard } from './TaskAnalysisCard.js';
-import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
+import type { ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
 import { generateCoderPrompt, generateReviewerPrompt, extractBlockingIssues } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import { ReclassifyOverlay } from './ReclassifyOverlay.js';
@@ -770,8 +769,9 @@ function SessionRunner({
 
             // Card B.2: classify output through observation pipeline
             // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger CODE_COMPLETE
+            // Use llmText (pure LLM output) for classification — fullText is only for history logs.
             const { isWork, observation } = processWorkerOutput(
-              outcome.fullText,
+              outcome.llmText,
               'coder',
               { round: ctx.round, adapter: config.coder },
             );
@@ -780,7 +780,7 @@ function SessionRunner({
               lastWorkerRoleRef.current = 'coder';
               reviewerFeedbackPendingRef.current = false;
               addTimelineEvent('coding', `Coder completed: ${tokens} tokens`);
-              send({ type: 'CODE_COMPLETE', output: outcome.fullText });
+              send({ type: 'CODE_COMPLETE', output: outcome.llmText });
             } else {
               // Card D.1: Non-work output → route as incident through OBSERVING pipeline
               addTimelineEvent('error', `Coder non-work output: ${observation.type}`);
@@ -859,11 +859,14 @@ function SessionRunner({
         timestamp: Date.now(),
       });
 
-      const summaryMsg = createRoundSummaryMessage(
-        ctx.round + 1,
-        ctx.round + 2,
-        summaryText.slice(0, 100),
-      );
+      const summarySnippet = summaryText.slice(0, 100);
+      const summaryMsg: Message = {
+        id: `round-summary-${ctx.round + 1}-${ctx.round + 2}-${Date.now()}`,
+        role: 'system',
+        content: `═══ Round ${ctx.round + 1}→${ctx.round + 2} · Summary: ${summarySnippet} ═══`,
+        timestamp: Date.now(),
+        metadata: { isRoundSummary: true },
+      };
       setMessages((prev) => [...prev, summaryMsg]);
 
       // Track reviewer outputs for loop detection
@@ -1013,13 +1016,14 @@ function SessionRunner({
               } catch { /* best-effort */ }
             }
 
-            // Track reviewer outputs for loop detection
-            reviewerOutputsRef.current.push(outcome.fullText);
+            // Track reviewer outputs for loop detection (use clean LLM text for comparison)
+            reviewerOutputsRef.current.push(outcome.llmText);
 
             // Card B.2: classify output through observation pipeline
             // Non-work outputs (quota_exhausted, auth_failed, etc.) must NOT trigger REVIEW_COMPLETE
+            // Use llmText (pure LLM output) for classification — fullText is only for history logs.
             const { isWork, observation } = processWorkerOutput(
-              outcome.fullText,
+              outcome.llmText,
               'reviewer',
               { round: ctx.round, adapter: config.reviewer },
             );
@@ -1028,7 +1032,7 @@ function SessionRunner({
               lastWorkerRoleRef.current = 'reviewer';
               reviewerFeedbackPendingRef.current = true;
               addTimelineEvent('reviewing', `Reviewer completed: ${tokens} tokens`);
-              send({ type: 'REVIEW_COMPLETE', output: outcome.fullText });
+              send({ type: 'REVIEW_COMPLETE', output: outcome.llmText });
             } else {
               // Card D.1: Non-work output → route as incident through OBSERVING pipeline
               addTimelineEvent('error', `Reviewer non-work output: ${observation.type}`);

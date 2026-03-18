@@ -6,12 +6,20 @@
 
 import type { GodAuditEntry } from './god-audit.js';
 import { appendAuditLog } from './god-audit.js';
-import type { ConvergenceLogEntry } from './god-convergence.js';
 import { stripToolMarkers } from './god-decision-service.js';
 
 // ── Types ──
 
-export type { ConvergenceLogEntry };
+/** Placeholder for removed ConvergenceLogEntry — will be cleaned up in later tasks. */
+export interface ConvergenceLogEntry {
+  round: number;
+  timestamp: string;
+  classification: string;
+  shouldTerminate: boolean;
+  blockingIssueCount: number;
+  criteriaProgress: { criterion: string; satisfied: boolean }[];
+  summary: string;
+}
 
 export interface PromptContext {
   taskType: 'explore' | 'code' | 'discuss' | 'review' | 'debug' | 'compound';

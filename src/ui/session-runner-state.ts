@@ -1,5 +1,5 @@
 import type { WorkflowContext } from '../engine/workflow-machine.js';
-import type { ConvergenceLogEntry } from '../god/god-convergence.js';
+import type { ConvergenceLogEntry } from '../god/god-prompt-generator.js';
 import type { RoundRecord } from '../types/session.js';
 import type { LoadedSession, SessionState } from '../session/session-manager.js';
 import type { OutputChunk } from '../types/adapter.js';
@@ -9,6 +9,8 @@ import type { Message, RoleName } from '../types/ui.js';
 
 export interface StreamAggregation {
   fullText: string;
+  /** Pure LLM text output (text + code chunks only). No tool markers, status JSON, or system metadata. */
+  llmText: string;
   displayText: string;
   displayBodyText: string;
   errorMessages: string[];
@@ -19,9 +21,9 @@ export interface StreamAggregation {
 }
 
 export type StreamOutcome =
-  | { kind: 'success'; fullText: string; displayText: string }
-  | { kind: 'error'; fullText: string; displayText: string; errorMessage: string }
-  | { kind: 'no_output'; fullText: string; displayText: string };
+  | { kind: 'success'; fullText: string; llmText: string; displayText: string }
+  | { kind: 'error'; fullText: string; llmText: string; displayText: string; errorMessage: string }
+  | { kind: 'no_output'; fullText: string; llmText: string; displayText: string };
 
 export type UserDecision =
   | { type: 'confirm'; action: 'accept' | 'continue'; pendingInstruction?: string }
@@ -60,6 +62,7 @@ const CHARS_PER_TOKEN = 4;
 export function createStreamAggregation(): StreamAggregation {
   return {
     fullText: '',
+    llmText: '',
     displayText: '',
     displayBodyText: '',
     errorMessages: [],
@@ -75,6 +78,7 @@ export function applyOutputChunk(
   chunk: OutputChunk,
 ): StreamAggregation {
   let fullText = state.fullText;
+  let llmText = state.llmText;
   let displayBodyText = state.displayBodyText;
   const errorMessages = [...state.errorMessages];
   let activeToolName = state.activeToolName;
@@ -84,6 +88,7 @@ export function applyOutputChunk(
 
   if (chunk.type === 'text' || chunk.type === 'code') {
     fullText = appendContent(fullText, chunk.content);
+    llmText = appendContent(llmText, chunk.content);
     displayBodyText = appendContent(displayBodyText, chunk.content);
   } else if (chunk.type === 'tool_use') {
     const toolName = (chunk.metadata?.tool as string) ?? 'Tool';
@@ -124,6 +129,7 @@ export function applyOutputChunk(
 
   return {
     fullText,
+    llmText,
     displayText,
     displayBodyText,
     errorMessages,
@@ -139,6 +145,7 @@ export function finalizeStreamAggregation(state: StreamAggregation): StreamOutco
     return {
       kind: 'error',
       fullText: state.fullText,
+      llmText: state.llmText,
       displayText: state.displayText,
       errorMessage: state.errorMessages.join('\n'),
     };
@@ -148,6 +155,7 @@ export function finalizeStreamAggregation(state: StreamAggregation): StreamOutco
     return {
       kind: 'no_output',
       fullText: state.fullText,
+      llmText: state.llmText,
       displayText: state.displayText,
     };
   }
@@ -155,6 +163,7 @@ export function finalizeStreamAggregation(state: StreamAggregation): StreamOutco
   return {
     kind: 'success',
     fullText: state.fullText,
+    llmText: state.llmText,
     displayText: state.displayText,
   };
 }

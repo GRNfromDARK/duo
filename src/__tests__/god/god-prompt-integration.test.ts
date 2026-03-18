@@ -15,7 +15,7 @@ import {
   generateReviewerPrompt,
 } from '../../god/god-prompt-generator.js';
 import type { PromptContext } from '../../god/god-prompt-generator.js';
-import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
+import type { ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
 
 // Mock audit log to avoid filesystem writes
 vi.mock('../../god/god-audit.js', () => ({

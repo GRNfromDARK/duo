@@ -11,7 +11,7 @@ import { SessionManager } from '../../session/session-manager.js';
 import type { SessionConfig } from '../../types/session.js';
 import type { SessionState } from '../../session/session-manager.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
-import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
+import type { ConvergenceLogEntry } from '../../god/god-prompt-generator.js';
 import { restoreGodSession } from '../../god/god-session-persistence.js';
 
 let tmpDir: string;
