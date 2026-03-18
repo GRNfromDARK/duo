@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 import type { Message, RoleName } from '../../types/ui.js';
 
 export interface ThinkingIndicatorProps {

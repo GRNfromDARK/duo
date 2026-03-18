@@ -3,7 +3,7 @@
  * Source: FR-022 (AC-072, AC-073, AC-074)
  */
 import { describe, it, expect } from 'vitest';
-import type { Key } from 'ink';
+import type { Key } from '../../tui/primitives.js';
 import {
   processKeybinding,
   KEYBINDING_LIST,

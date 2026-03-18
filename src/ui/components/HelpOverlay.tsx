@@ -3,7 +3,7 @@
  * Source: FR-022 (AC-073)
  */
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 import { KEYBINDING_LIST } from '../keybindings.js';
 
 export interface HelpOverlayProps {

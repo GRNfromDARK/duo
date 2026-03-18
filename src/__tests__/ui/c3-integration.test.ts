@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { Key } from 'ink';
+import type { Key } from '../../tui/primitives.js';
 import { processKeybinding, type KeyContext, KEYBINDING_LIST } from '../../ui/keybindings.js';
 import { canTriggerReclassify, RECLASSIFY_ALLOWED_STATES } from '../../ui/reclassify-overlay.js';
 

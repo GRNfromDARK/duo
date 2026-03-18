@@ -9,7 +9,7 @@
  */
 
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 import type { DisplayMode } from '../display-mode.js';
 
 export interface RoutingDetails {

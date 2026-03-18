@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text } from '../../tui/primitives.js';
 import { computeStringWidth, getCharWidth } from '../message-lines.js';
 
 export interface TaskBannerProps {

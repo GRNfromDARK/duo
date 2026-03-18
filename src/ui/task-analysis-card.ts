@@ -3,7 +3,7 @@
  * Card F.1: FR-001a (AC-004, AC-005, AC-006, AC-007)
  *
  * This module is framework-agnostic: it exports pure functions that manage
- * state transitions. The Ink React component layer consumes these functions.
+ * state transitions. The TUI component layer consumes these functions.
  */
 
 import type { GodTaskAnalysis } from '../types/god-schemas.js';

@@ -8,17 +8,21 @@
     "duo": "dist/cli.js"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "node scripts/with-bun.mjs x vitest run",
     "build": "tsup src/cli.ts --format esm",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "smoke:opentui": "node scripts/with-bun.mjs run src/tui/cli.tsx --smoke-test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@opentui/core": "^0.1.88",
+    "@opentui/react": "^0.1.88",
     "@xstate/react": "^6.1.0",
-    "ink": "^6.8.0",
     "react": "^19.2.4",
+    "web-tree-sitter": "^0.25.10",
+    "ws": "^8.18.3",
     "xstate": "^5.28.0",
     "zod": "^4.3.6"
   },
@@ -26,7 +30,6 @@
     "@types/node": "^25.4.0",
     "@types/react": "^19.2.14",
     "eslint": "^10.0.3",
-    "ink-testing-library": "^4.0.0",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

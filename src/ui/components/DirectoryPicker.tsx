@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput } from '../../tui/primitives.js';
 import {
   completePath,
   isGitRepo,

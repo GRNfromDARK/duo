@@ -36,7 +36,7 @@ import {
   DEFAULT_SCAN_DIRS,
   MRU_MAX_ITEMS,
 } from '../../ui/directory-picker-state.js';
-import type { Key } from 'ink';
+import type { Key } from '../../tui/primitives.js';
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReaddirSync = vi.mocked(readdirSync);

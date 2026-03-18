@@ -1,140 +1,91 @@
 #!/usr/bin/env node
-import React from 'react';
-import { render } from 'ink';
-import { VERSION } from './index.js';
-import { sanitizeGodAdapterForResume } from './god/god-adapter-config.js';
-import { parseStartArgs, createSessionConfig } from './session/session-starter.js';
-import { detectInstalledCLIs } from './adapters/detect.js';
-import { handleResumeList, handleResume, handleLog } from './cli-commands.js';
-import { App } from './ui/components/App.js';
-import type { SessionConfig } from './types/session.js';
+import { spawnSync } from 'node:child_process';
 import * as path from 'node:path';
-import { enterAlternateScreen } from './ui/alternate-screen.js';
-import { createTerminalInput } from './ui/mouse-input.js';
+
+import { VERSION } from './index.js';
+import { handleResumeList, handleLog } from './cli-commands.js';
+import { buildOpenTuiLaunchSpec, resolveBunBinary } from './tui/runtime/bun-launcher.js';
 
 const args = process.argv.slice(2);
 
-async function runInkApp(props: Record<string, unknown>): Promise<void> {
-  const { stdin, cleanup: cleanupInput } = createTerminalInput(process.stdin);
-  const cleanupScreen = enterAlternateScreen(process.stdout);
-  const { waitUntilExit } = render(React.createElement(App, props), {
-    exitOnCtrlC: false,
-    stdin,
+function isVersionCommand(argv: string[]): boolean {
+  return argv.includes('--version') || argv.includes('-v');
+}
+
+function isHelpCommand(argv: string[]): boolean {
+  return argv[0] === 'help' || argv.includes('--help') || argv.includes('-h');
+}
+
+function shouldHandleInNode(argv: string[]): boolean {
+  const command = argv[0];
+
+  if (isVersionCommand(argv) || isHelpCommand(argv)) {
+    return true;
+  }
+
+  if (command === 'log') {
+    return true;
+  }
+
+  if (command === 'resume' && !argv[1]) {
+    return true;
+  }
+
+  return false;
+}
+
+function handOffToOpenTui(argv: string[]): never {
+  const bunBinary = resolveBunBinary({
+    cwd: process.cwd(),
+    env: process.env,
   });
 
-  try {
-    await waitUntilExit();
-  } finally {
-    cleanupInput();
-    cleanupScreen();
+  if (!bunBinary) {
+    console.error('Bun is required for the OpenTUI runtime. Set DUO_BUN_BINARY or install Bun.');
+    process.exit(1);
   }
+
+  const spec = buildOpenTuiLaunchSpec({
+    bunBinary,
+    cwd: process.cwd(),
+    argv,
+  });
+
+  const result = spawnSync(spec.command, spec.args, {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: 'inherit',
+  });
+
+  process.exit(result.status ?? 1);
 }
 
-if (args.includes('--version') || args.includes('-v')) {
-  console.log(VERSION);
-  process.exit(0);
-}
+if (shouldHandleInNode(args)) {
+  const command = args[0];
 
-const command = args[0];
+  if (isVersionCommand(args)) {
+    console.log(VERSION);
+    process.exit(0);
+  }
 
-if (command === 'start') {
-  (async () => {
-    // Detect installed CLIs
-    const detected = await detectInstalledCLIs();
+  if (command === 'resume') {
+    handleResumeList(path.join(process.cwd(), '.duo', 'sessions'), console.log);
+    process.exit(0);
+  }
 
-    // Parse args
-    const parsed = parseStartArgs(args);
-    let config: SessionConfig | undefined;
-
-    // If all required args are provided, validate and create config
-    if (parsed.coder && parsed.reviewer && parsed.task) {
-      const result = await createSessionConfig(parsed, detected);
-
-      if (!result.validation.valid) {
-        for (const err of result.validation.errors) {
-          console.error(`Error: ${err}`);
-        }
-        process.exit(1);
-      }
-
-      for (const warn of result.validation.warnings) {
-        console.warn(`Warning: ${warn}`);
-      }
-
-      config = result.config ?? undefined;
+  if (command === 'log') {
+    const sessionId = args[1];
+    if (!sessionId) {
+      console.log('Usage: duo log <session-id> [--type <type>]');
+      process.exit(1);
     }
 
-    // Render TUI — either with full config (direct start) or without (interactive setup)
-    await runInkApp({
-      initialConfig: config,
-      detected,
-    });
-  })().catch((err) => {
-    console.error('Failed to start Duo:', err);
-    process.exit(1);
-  });
-} else if (command === 'resume') {
-  const sessionsDir = path.join(process.cwd(), '.duo', 'sessions');
-  const sessionId = args[1];
-
-  if (sessionId) {
-    (async () => {
-      const resumeLogs: string[] = [];
-      const result = handleResume(sessionId, sessionsDir, (msg) => resumeLogs.push(msg));
-      if (!result.success || !result.session) {
-        for (const line of resumeLogs) {
-          console.log(line);
-        }
-        process.exit(1);
-      }
-
-      const detected = await detectInstalledCLIs();
-      const resolvedGod = sanitizeGodAdapterForResume(
-        result.session.metadata.reviewer,
-        detected,
-        result.session.metadata.god,
-      );
-      for (const warn of resolvedGod.warnings) {
-        console.warn(`Warning: ${warn}`);
-      }
-
-      const initialConfig: SessionConfig = {
-        projectDir: result.session.metadata.projectDir,
-        coder: result.session.metadata.coder,
-        reviewer: result.session.metadata.reviewer,
-        god: resolvedGod.god,
-        task: result.session.metadata.task,
-        coderModel: result.session.metadata.coderModel,
-        reviewerModel: result.session.metadata.reviewerModel,
-        godModel: result.session.metadata.godModel,
-      };
-
-      await runInkApp({
-        initialConfig,
-        detected,
-        resumeSession: result.session,
-      });
-    })().catch((err) => {
-      console.error('Failed to resume Duo session:', err);
-      process.exit(1);
-    });
-  } else {
-    handleResumeList(sessionsDir, console.log);
-  }
-} else if (command === 'log') {
-  const sessionsDir = path.join(process.cwd(), '.duo', 'sessions');
-  const sessionId = args[1];
-
-  if (!sessionId) {
-    console.log('Usage: duo log <session-id> [--type <type>]');
-    process.exit(1);
+    const typeIdx = args.indexOf('--type');
+    const type = typeIdx !== -1 ? args[typeIdx + 1] : undefined;
+    handleLog(sessionId, { type }, path.join(process.cwd(), '.duo', 'sessions'), console.log);
+    process.exit(0);
   }
 
-  const typeIdx = args.indexOf('--type');
-  const type = typeIdx !== -1 ? args[typeIdx + 1] : undefined;
-
-  handleLog(sessionId, { type }, sessionsDir, console.log);
-} else if (command === 'help' || args.includes('--help') || args.includes('-h')) {
   console.log(`Duo v${VERSION} — Multi AI Coding Assistant Collaboration Platform`);
   console.log('');
   console.log('Usage:');
@@ -159,36 +110,7 @@ if (command === 'start') {
   console.log('  duo --coder claude-code --reviewer codex --task "Add JWT auth"');
   console.log('  duo --coder claude-code --coder-model sonnet --reviewer codex --reviewer-model gpt-5.4 --task "Fix bug"');
   console.log('  duo   # Interactive setup wizard');
-} else {
-  // Default: no subcommand → treat as "start" (interactive mode or with flags)
-  (async () => {
-    const detected = await detectInstalledCLIs();
-    const parsed = parseStartArgs(['start', ...args]);
-    let config: SessionConfig | undefined;
-
-    if (parsed.coder && parsed.reviewer && parsed.task) {
-      const result = await createSessionConfig(parsed, detected);
-
-      if (!result.validation.valid) {
-        for (const err of result.validation.errors) {
-          console.error(`Error: ${err}`);
-        }
-        process.exit(1);
-      }
-
-      for (const warn of result.validation.warnings) {
-        console.warn(`Warning: ${warn}`);
-      }
-
-      config = result.config ?? undefined;
-    }
-
-    await runInkApp({
-      initialConfig: config,
-      detected,
-    });
-  })().catch((err) => {
-    console.error('Failed to start Duo:', err);
-    process.exit(1);
-  });
+  process.exit(0);
 }
+
+handOffToOpenTui(args);
