@@ -12,7 +12,6 @@ export interface InterruptClassification {
 export interface InterruptContext {
   userInput: string;
   taskGoal: string;
-  round: number;
   currentPhaseId?: string;
   lastCoderOutput?: string;
   lastReviewerOutput?: string;
@@ -50,7 +49,6 @@ export async function classifyInterruptIntent(
       model,
       logging: {
         sessionDir: context.sessionDir,
-        round: context.round,
         kind: 'god_interrupt_classification',
         meta: { attempt: 1 },
       },
@@ -60,7 +58,6 @@ export async function classifyInterruptIntent(
     const entry: GodAuditEntry = {
       seq: context.seq,
       timestamp: new Date().toISOString(),
-      round: context.round,
       decisionType: 'INTERRUPT_CLASSIFICATION',
       inputSummary: context.userInput,
       outputSummary: JSON.stringify(parsed),
@@ -86,7 +83,6 @@ function buildInterruptPrompt(context: InterruptContext): string {
     '',
     `User says: "${context.userInput}"`,
     `Task: ${context.taskGoal}`,
-    `Round: ${context.round}`,
     context.currentPhaseId ? `Phase: ${context.currentPhaseId}` : '',
     context.lastCoderOutput ? `Last coder output:\n${context.lastCoderOutput}` : '',
     context.lastReviewerOutput ? `Last reviewer output:\n${context.lastReviewerOutput}` : '',

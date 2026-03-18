@@ -20,7 +20,6 @@ export interface DispatchContext {
   pendingReviewerMessage: string | null;
   displayToUser: (message: string) => void;
   auditLogger: GodAuditLogger;
-  round: number;
 }
 
 export interface DispatchResult {
@@ -73,7 +72,6 @@ export function dispatchMessages(
         // Write to audit log (allowed side effect)
         context.auditLogger.append({
           timestamp: new Date().toISOString(),
-          round: context.round,
           decisionType: 'message_dispatch',
           inputSummary: `system_log message dispatched`,
           outputSummary: msg.content,
@@ -108,7 +106,7 @@ const ADAPTER_SWITCH_PATTERN = /(?:切换|switch|change|swap)\s+adapter/i;
 export function checkNLInvariantViolations(
   messages: EnvelopeMessage[],
   actions: GodAction[],
-  context: { round: number; phaseId: string },
+  context: { phaseId: string },
 ): Observation[] {
   if (messages.length === 0) return [];
 
@@ -126,7 +124,6 @@ export function checkNLInvariantViolations(
         summary: 'NL message mentions phase change but no set_phase action present (FR-016)',
         severity: 'error',
         timestamp,
-        round: context.round,
         phaseId: context.phaseId,
       });
     }
@@ -142,7 +139,6 @@ export function checkNLInvariantViolations(
         summary: 'NL message mentions accept but no accept_task action present (FR-016)',
         severity: 'error',
         timestamp,
-        round: context.round,
         phaseId: context.phaseId,
       });
     }
@@ -158,7 +154,6 @@ export function checkNLInvariantViolations(
         summary: 'NL message mentions adapter switch but no switch_adapter action present (FR-016)',
         severity: 'error',
         timestamp,
-        round: context.round,
         phaseId: context.phaseId,
       });
     }

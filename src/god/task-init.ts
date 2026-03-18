@@ -57,7 +57,6 @@ export async function initializeTask(
       ? {
           logging: {
             sessionDir,
-            round: 0,
             kind: 'god_task_init',
             meta: { attempt: 1 },
           },

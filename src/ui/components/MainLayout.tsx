@@ -62,8 +62,6 @@ export interface MainLayoutProps {
   /** Structured status bar props */
   statusBarProps?: {
     projectPath: string;
-    round: number;
-    maxRounds: number;
     status: WorkflowStatus;
     activeAgent: string | null;
     tokenCount: number;
@@ -77,7 +75,6 @@ export interface MainLayoutProps {
   };
   /** Context overlay data */
   contextData?: {
-    roundNumber: number;
     coderName: string;
     reviewerName: string;
     taskSummary: string;
@@ -335,8 +332,6 @@ export function MainLayout({
           {statusBarProps ? (
             <StatusBar
               projectPath={statusBarProps.projectPath}
-              round={statusBarProps.round}
-              maxRounds={statusBarProps.maxRounds}
               status={statusBarProps.status}
               activeAgent={statusBarProps.activeAgent}
               tokenCount={statusBarProps.tokenCount}

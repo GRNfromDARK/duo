@@ -13,7 +13,7 @@ import type { Observation } from '../types/observation.js';
 export interface GodAuditEntry {
   seq: number;
   timestamp: string;
-  round: number;
+  round?: number;
   decisionType: string;
   inputSummary: string;   // ≤ 2000 chars
   outputSummary: string;  // ≤ 2000 chars
@@ -171,7 +171,6 @@ export class GodAuditLogger {
 export function logReviewerOverrideAudit(
   logger: GodAuditLogger,
   params: {
-    round: number;
     reviewerObservation: { summary: string; rawRef?: string };
     envelope: {
       authority: { reviewerOverride: boolean; acceptAuthority: string };
@@ -181,7 +180,7 @@ export function logReviewerOverrideAudit(
     };
   },
 ): void {
-  const { round, reviewerObservation, envelope } = params;
+  const { reviewerObservation, envelope } = params;
 
   // Extract reviewer verdict from observation text
   const verdictMatch = /\[(APPROVED|CHANGES_REQUESTED)\]/.exec(
@@ -200,7 +199,6 @@ export function logReviewerOverrideAudit(
 
   logger.append({
     timestamp: new Date().toISOString(),
-    round,
     decisionType: isOverride ? 'reviewer_override' : 'reviewer_aligned',
     inputSummary: `Reviewer verdict: ${reviewerVerdict} — ${reviewerObservation.summary}`,
     outputSummary: `God verdict: ${godVerdict}${isOverride ? ' (override)' : ''}`,
@@ -220,7 +218,6 @@ export function logReviewerOverrideAudit(
 export function logIncidentAudit(
   logger: GodAuditLogger,
   params: {
-    round: number;
     incidentObservation: {
       type: string;
       summary: string;
@@ -237,12 +234,11 @@ export function logIncidentAudit(
     executionResults: Array<{ type: string; summary: string; severity: string; [key: string]: unknown }>;
   },
 ): void {
-  const { round, incidentObservation, envelope, executionResults } = params;
+  const { incidentObservation, envelope, executionResults } = params;
   const actionTypes = envelope.actions.map(a => a.type).join(', ');
 
   logger.append({
     timestamp: new Date().toISOString(),
-    round,
     decisionType: 'incident_response',
     inputSummary: `Incident: ${incidentObservation.type} (${incidentObservation.severity}) — ${incidentObservation.summary}`,
     outputSummary: `God response: ${actionTypes || 'no actions'} — ${envelope.diagnosis.summary}`,
@@ -271,7 +267,6 @@ function extractReviewerVerdictFromObs(obs: Observation): string {
 // ── Card F.2: Enhanced Envelope Decision Audit ──
 
 export interface EnvelopeDecisionParams {
-  round: number;
   observations: Observation[];
   envelope: GodDecisionEnvelope;
   executionResults: Observation[];
@@ -295,7 +290,7 @@ export function logEnvelopeDecision(
   logger: GodAuditLogger,
   params: EnvelopeDecisionParams,
 ): void {
-  const { round, observations, envelope, executionResults } = params;
+  const { observations, envelope, executionResults } = params;
 
   // Build human-readable inputSummary (NFR-006)
   const obsSummaries = observations.map(o => `${o.type}(${o.severity})`);
@@ -341,7 +336,6 @@ export function logEnvelopeDecision(
   logger.append(
     {
       timestamp: new Date().toISOString(),
-      round,
       decisionType: 'god_decision',
       inputSummary,
       outputSummary,

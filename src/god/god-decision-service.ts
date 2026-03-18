@@ -30,8 +30,6 @@ export interface GodDecisionContext {
     type: string;
     description: string;
   }[];
-  round: number;
-  maxRounds: number;
   previousDecisions: GodDecisionEnvelope[];
   availableAdapters: string[];
   activeRole: 'coder' | 'reviewer' | null;
@@ -237,7 +235,7 @@ function buildUserPrompt(observations: Observation[], context: GodDecisionContex
   sections.push(`## Task Goal\n${stripAnsiEscapes(context.taskGoal)}`);
 
   const phaseTypeStr = context.currentPhaseType ? ` (type: ${context.currentPhaseType})` : '';
-  sections.push(`## Phase & Round\nPhase: ${context.currentPhaseId}${phaseTypeStr}\nRound: ${context.round} of ${context.maxRounds}\nActive Role: ${context.activeRole ?? 'none'}`);
+  sections.push(`## Phase\nPhase: ${context.currentPhaseId}${phaseTypeStr}\nActive Role: ${context.activeRole ?? 'none'}`);
 
   const phasePlan = buildPhasePlanSection(context);
   if (phasePlan) sections.push(phasePlan);
@@ -263,7 +261,7 @@ function buildResumePrompt(observations: Observation[], context: GodDecisionCont
   const sections: string[] = [];
 
   const phaseTypeStr = context.currentPhaseType ? ` (type: ${context.currentPhaseType})` : '';
-  sections.push(`## Phase & Round\nPhase: ${context.currentPhaseId}${phaseTypeStr}\nRound: ${context.round} of ${context.maxRounds}\nActive Role: ${context.activeRole ?? 'none'}`);
+  sections.push(`## Phase\nPhase: ${context.currentPhaseId}${phaseTypeStr}\nActive Role: ${context.activeRole ?? 'none'}`);
 
   sections.push(buildObservationsSection(observations));
 
@@ -332,7 +330,7 @@ export const PROPOSAL_ROUTING_INSTRUCTIONS = `Design proposal routing:
 - When Coder output contains multiple implementation proposals or approaches (e.g. 方案 A/B/C, Option 1/2/3, trade-off comparisons, pros/cons tables), you MUST route them to Reviewer via send_to_reviewer BEFORE selecting one.
 - Reviewer evaluates the proposals and provides their opinion and recommendation.
 - Route Reviewer's feedback back to Coder via send_to_coder so Coder can respond.
-- Once Coder and Reviewer align on an approach (or after 2 rounds of disagreement), you make the final call and direct implementation.
+- Once Coder and Reviewer align on an approach (or after sustained disagreement), you make the final call and direct implementation.
 - Signals that Coder is proposing approaches:
   - Multiple named options (方案 A/B/C, Option 1/2/3, Approach X/Y)
   - Pros/cons comparison tables or trade-off analysis
@@ -497,7 +495,6 @@ export class GodDecisionService {
         model: this.model,
         logging: {
           sessionDir: context.sessionDir,
-          round: context.round,
           kind: 'god_unified_decision',
         },
       });

@@ -123,7 +123,7 @@ function severityForType(type: ObservationType): ObservationSeverity {
 export function classifyOutput(
   raw: string,
   source: ObservationSource,
-  meta: { round: number; phaseId?: string; adapter?: string },
+  meta: { phaseId?: string; adapter?: string },
 ): Observation {
   const type = classifyType(raw, source);
 
@@ -134,7 +134,6 @@ export function classifyOutput(
     rawRef: raw,
     severity: severityForType(type),
     timestamp: new Date().toISOString(),
-    round: meta.round,
     phaseId: meta.phaseId ?? null,
     adapter: meta.adapter,
   };
@@ -148,7 +147,6 @@ export function createObservation(
   source: ObservationSource,
   summary: string,
   opts: {
-    round: number;
     rawRef?: string;
     phaseId?: string;
     adapter?: string;
@@ -162,7 +160,6 @@ export function createObservation(
     rawRef: opts.rawRef,
     severity: opts.severity ?? severityForType(type),
     timestamp: new Date().toISOString(),
-    round: opts.round,
     phaseId: opts.phaseId ?? null,
     adapter: opts.adapter,
   };

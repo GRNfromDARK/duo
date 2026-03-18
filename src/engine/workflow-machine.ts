@@ -23,8 +23,6 @@ import type { Observation } from '../types/observation.js';
 import type { GodDecisionEnvelope } from '../types/god-envelope.js';
 
 export interface WorkflowContext {
-  round: number;
-  maxRounds: number;
   consecutiveRouteToCoder: number;
   taskPrompt: string | null;
   activeProcess: 'coder' | 'reviewer' | null;
@@ -54,7 +52,7 @@ type UserInputEvent = { type: 'USER_INPUT'; input: string; resumeAs: 'coder' | '
 type UserConfirmEvent = { type: 'USER_CONFIRM'; action: 'continue' | 'accept' };
 type ProcessErrorEvent = { type: 'PROCESS_ERROR'; error: string };
 type TimeoutEvent = { type: 'TIMEOUT' };
-type TaskInitCompleteEvent = { type: 'TASK_INIT_COMPLETE'; maxRounds?: number };
+type TaskInitCompleteEvent = { type: 'TASK_INIT_COMPLETE' };
 // TASK_INIT_SKIP removed — God is always required in v2 architecture
 type ResumeSessionEvent = { type: 'RESUME_SESSION'; sessionId: string };
 type RecoveryEvent = { type: 'RECOVERY' };
@@ -193,8 +191,6 @@ export const workflowMachine = setup({
   id: 'workflow',
   initial: 'IDLE',
   context: ({ input }) => ({
-    round: input?.round ?? 0,
-    maxRounds: input?.maxRounds ?? 10,
     consecutiveRouteToCoder: input?.consecutiveRouteToCoder ?? 0,
     taskPrompt: input?.taskPrompt ?? null,
     activeProcess: input?.activeProcess ?? null,
@@ -237,10 +233,6 @@ export const workflowMachine = setup({
           actions: assign({
             activeProcess: () => 'coder' as const,
             consecutiveRouteToCoder: () => 0,
-            maxRounds: ({ context, event }) => {
-              const e = event as TaskInitCompleteEvent;
-              return e.maxRounds ?? context.maxRounds;
-            },
           }),
         },
         PROCESS_ERROR: {
@@ -395,7 +387,6 @@ export const workflowMachine = setup({
             actions: assign({
               currentObservations: ({ event }) => (event as ExecutionCompleteEvent).results,
               activeProcess: () => 'coder' as const,
-              round: ({ context }) => context.round + 1,
               // Bug 1 fix: INCREMENT counter instead of resetting
               consecutiveRouteToCoder: ({ context }) => context.consecutiveRouteToCoder + 1,
               // Card E.2: clear clarification state on resume to work

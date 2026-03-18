@@ -1,6 +1,4 @@
 import type { WorkflowContext } from '../engine/workflow-machine.js';
-import type { ConvergenceLogEntry } from '../god/god-prompt-generator.js';
-import type { RoundRecord } from '../types/session.js';
 import type { LoadedSession, SessionState } from '../session/session-manager.js';
 import type { OutputChunk } from '../types/adapter.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
@@ -40,7 +38,6 @@ export interface RestoredSessionRuntime {
   workflowInput: Partial<WorkflowContext>;
   restoreEvent: RestoreEventType;
   messages: Message[];
-  rounds: RoundRecord[];
   reviewerOutputs: string[];
   tokenCount: number;
   /** Persisted CLI session ID for the coder adapter */
@@ -51,8 +48,6 @@ export interface RestoredSessionRuntime {
   godSessionId?: string;
   /** God task analysis restored from session (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;
-  /** God convergence log restored from session (FR-011) */
-  godConvergenceLog?: ConvergenceLogEntry[];
   /** Current phase ID for compound tasks */
   currentPhaseId?: string | null;
 }
@@ -209,17 +204,15 @@ export function buildRestoredSessionRuntime(
 ): RestoredSessionRuntime {
   const history = [...loaded.history].sort((a, b) => a.timestamp - b.timestamp);
   const messages = history.map((entry) => toMessage(entry, config));
-  const rounds = buildRounds(history);
-  const reviewerOutputs = rounds
-    .map((round) => round.reviewerOutput)
-    .filter((output) => output.trim().length > 0);
+  const reviewerOutputs = history
+    .filter((entry) => entry.role === 'reviewer' && entry.content.trim().length > 0)
+    .map((entry) => entry.content);
   const tokenCount = Math.ceil(
     history.reduce((total, entry) => total + entry.content.length, 0) / CHARS_PER_TOKEN,
   );
 
   return {
     workflowInput: {
-      round: loaded.state.round,
       sessionId: loaded.metadata.id,
       taskPrompt: loaded.metadata.task,
       lastCoderOutput: getLastRoleContent(history, 'coder'),
@@ -232,14 +225,12 @@ export function buildRestoredSessionRuntime(
     },
     restoreEvent: mapRestoreEvent(loaded.state),
     messages,
-    rounds,
     reviewerOutputs,
     tokenCount,
     coderSessionId: loaded.state.coderSessionId,
     reviewerSessionId: loaded.state.reviewerSessionId,
     godSessionId: loaded.state.godSessionId,
     godTaskAnalysis: loaded.state.godTaskAnalysis,
-    godConvergenceLog: loaded.state.godConvergenceLog,
     currentPhaseId: loaded.state.currentPhaseId ?? null,
   };
 }
@@ -251,39 +242,12 @@ function toMessage(
   const isCoder = entry.role === 'coder';
 
   return {
-    id: `restored-${entry.round}-${entry.role}-${entry.timestamp}`,
+    id: `restored-${entry.role}-${entry.timestamp}`,
     role: (isCoder ? config.coder : config.reviewer) as RoleName,
     roleLabel: isCoder ? 'Coder' : 'Reviewer',
     content: entry.content,
     timestamp: entry.timestamp,
   };
-}
-
-function buildRounds(history: LoadedSession['history']): RoundRecord[] {
-  const byRound = new Map<number, RoundRecord>();
-
-  for (const entry of history) {
-    const index = entry.round + 1;
-    const existing = byRound.get(entry.round) ?? {
-      index,
-      coderOutput: '',
-      reviewerOutput: '',
-      timestamp: entry.timestamp,
-    };
-
-    if (entry.role === 'coder') {
-      existing.coderOutput = entry.content;
-    } else if (entry.role === 'reviewer') {
-      existing.reviewerOutput = entry.content;
-    }
-
-    existing.timestamp = Math.max(existing.timestamp, entry.timestamp);
-    byRound.set(entry.round, existing);
-  }
-
-  return [...byRound.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, round]) => round);
 }
 
 function getLastRoleContent(

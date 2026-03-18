@@ -36,7 +36,6 @@ export interface HandExecutionContext {
   clarificationState: { active: boolean; question: string | null };
   interruptResumeStrategy: 'continue' | 'redirect' | 'stop' | null;
   adapterConfig: Map<string, string>; // role → adapter name
-  round: number;
   sessionDir: string;
   cwd: string;
 
@@ -61,7 +60,6 @@ function makeResultObservation(
     summary,
     severity: 'info',
     timestamp: makeTimestamp(),
-    round: context.round,
     phaseId: context.currentPhaseId,
   };
 }
@@ -77,7 +75,6 @@ function makeViolationObservation(
     summary: `${action.type} failed: ${detail}`,
     severity: 'error',
     timestamp: makeTimestamp(),
-    round: context.round,
     phaseId: context.currentPhaseId,
   };
 }
@@ -93,7 +90,6 @@ function makeBlockedObservation(
     summary: `${action.type} blocked by rule engine: ${blockedRuleIds.join(', ')}`,
     severity: 'error',
     timestamp: makeTimestamp(),
-    round: context.round,
     phaseId: context.currentPhaseId,
   };
 }
@@ -141,7 +137,6 @@ function executeSetPhase(
 
   ctx.auditLogger?.append({
     timestamp: makeTimestamp(),
-    round: ctx.round,
     decisionType: 'phase_transition',
     inputSummary: `Phase change: ${oldPhase} → ${action.phaseId}`,
     outputSummary: `Transitioned to ${action.phaseId}${action.summary ? ': ' + action.summary : ''}`,
@@ -190,7 +185,6 @@ function executeAcceptTask(
   // D.3: Enhanced audit with envelope messages (FR-018)
   ctx.auditLogger?.append({
     timestamp: makeTimestamp(),
-    round: ctx.round,
     decisionType: 'accept_task',
     inputSummary: `Accept with rationale: ${action.rationale}`,
     outputSummary: `Task accepted (${action.rationale}): ${action.summary}`,
@@ -261,7 +255,6 @@ function executeSwitchAdapter(
     summary: `switch_adapter: not yet implemented — ${action.role} remains on current adapter`,
     severity: 'warning',
     timestamp: makeTimestamp(),
-    round: ctx.round,
     phaseId: ctx.currentPhaseId,
   };
 }
@@ -308,7 +301,6 @@ function executeEmitSummary(
 ): Observation {
   ctx.auditLogger?.append({
     timestamp: makeTimestamp(),
-    round: ctx.round,
     decisionType: 'emit_summary',
     inputSummary: 'Management summary emitted',
     outputSummary: action.content,

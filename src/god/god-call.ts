@@ -3,7 +3,6 @@ import { appendPromptLog } from '../session/prompt-log.js';
 
 export interface GodCallLoggingOptions {
   sessionDir: string;
-  round: number;
   kind: string;
   meta?: Record<string, unknown>;
 }
@@ -27,7 +26,6 @@ export async function collectGodAdapterOutput(options: GodCallOptions): Promise<
 
   if (logging) {
     appendPromptLog(logging.sessionDir, {
-      round: logging.round,
       agent: 'god',
       adapter: adapter.name,
       kind: logging.kind,

@@ -23,7 +23,6 @@ export const RECLASSIFY_ALLOWED_STATES: string[] = [
 export interface ReclassifyOverlayState {
   visible: boolean;
   currentType: TaskType;
-  currentRound: number;
   selectedType: TaskType;
   availableTypes: TaskType[];
 }
@@ -40,12 +39,10 @@ export function canTriggerReclassify(workflowState: string): boolean {
  */
 export function createReclassifyState(
   currentType: TaskType,
-  currentRound: number,
 ): ReclassifyOverlayState {
   return {
     visible: true,
     currentType,
-    currentRound,
     selectedType: RECLASSIFY_TYPES.includes(currentType) ? currentType : RECLASSIFY_TYPES[0],
     availableTypes: [...RECLASSIFY_TYPES],
   };
@@ -106,12 +103,11 @@ export function handleReclassifyKey(
  */
 export function writeReclassifyAudit(
   sessionDir: string,
-  opts: { seq: number; round: number; fromType: TaskType; toType: TaskType },
+  opts: { seq: number; fromType: TaskType; toType: TaskType },
 ): void {
   const entry: GodAuditEntry = {
     seq: opts.seq,
     timestamp: new Date().toISOString(),
-    round: opts.round,
     decisionType: 'RECLASSIFY',
     inputSummary: `User reclassified task from "${opts.fromType}" to "${opts.toType}"`,
     outputSummary: `Task type changed: ${opts.fromType} → ${opts.toType}`,

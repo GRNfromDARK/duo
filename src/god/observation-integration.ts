@@ -18,7 +18,7 @@ import type { Observation } from '../types/observation.js';
 export function processWorkerOutput(
   raw: string,
   role: 'coder' | 'reviewer',
-  meta: { round: number; phaseId?: string; adapter?: string },
+  meta: { phaseId?: string; adapter?: string },
 ): {
   observation: Observation;
   isWork: boolean;
@@ -34,11 +34,9 @@ export function processWorkerOutput(
  * Create an observation for a human interrupt (Ctrl+C).
  */
 export function createInterruptObservation(
-  round: number,
   opts?: { phaseId?: string },
 ): Observation {
   return createObservation('human_interrupt', 'human', 'User pressed Ctrl+C', {
-    round,
     severity: 'warning',
     phaseId: opts?.phaseId,
   });
@@ -49,11 +47,9 @@ export function createInterruptObservation(
  */
 export function createTextInterruptObservation(
   userText: string,
-  round: number,
   opts?: { phaseId?: string },
 ): Observation {
   return createObservation('human_message', 'human', userText, {
-    round,
     severity: 'info',
     rawRef: userText,
     phaseId: opts?.phaseId,
@@ -65,11 +61,9 @@ export function createTextInterruptObservation(
  */
 export function createProcessErrorObservation(
   errorMessage: string,
-  round: number,
   opts?: { phaseId?: string; adapter?: string },
 ): Observation {
   return createObservation('tool_failure', 'runtime', errorMessage, {
-    round,
     severity: 'error',
     rawRef: errorMessage,
     phaseId: opts?.phaseId,
@@ -81,11 +75,9 @@ export function createProcessErrorObservation(
  * Create an observation for a process timeout.
  */
 export function createTimeoutObservation(
-  round: number,
   opts?: { phaseId?: string; adapter?: string },
 ): Observation {
   return createObservation('tool_failure', 'runtime', 'Process timeout', {
-    round,
     severity: 'error',
     phaseId: opts?.phaseId,
     adapter: opts?.adapter,

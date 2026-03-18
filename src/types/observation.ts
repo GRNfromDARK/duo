@@ -39,7 +39,6 @@ export const ObservationSchema = z.object({
   rawRef: z.string().optional(),
   severity: ObservationSeveritySchema.default('error'),
   timestamp: z.string(),
-  round: z.number().int().min(0),
   phaseId: z.string().nullable().optional(),
   adapter: z.string().optional(),
 });

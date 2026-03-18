@@ -35,8 +35,6 @@ export interface MessageMetadata {
   tokenCount?: number;
   /** Whether this is a routing/internal event (hidden in minimal mode) */
   isRoutingEvent?: boolean;
-  /** Whether this is a round summary divider */
-  isRoundSummary?: boolean;
 }
 
 export interface Message {

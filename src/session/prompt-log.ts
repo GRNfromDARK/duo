@@ -6,7 +6,6 @@ export type PromptLogAgent = 'coder' | 'reviewer' | 'god';
 export interface PromptLogEntry {
   seq: number;
   timestamp: string;
-  round: number;
   agent: PromptLogAgent;
   adapter: string;
   kind: string;
@@ -16,7 +15,6 @@ export interface PromptLogEntry {
 }
 
 export interface PromptLogEntryInput {
-  round: number;
   agent: PromptLogAgent;
   adapter: string;
   kind: string;
@@ -51,7 +49,6 @@ export class PromptLogger {
     const record: PromptLogEntry = {
       seq: this.seq,
       timestamp: entry.timestamp ?? new Date().toISOString(),
-      round: entry.round,
       agent: entry.agent,
       adapter: entry.adapter,
       kind: entry.kind,

@@ -107,7 +107,7 @@ export function handleResumeList(
   for (const s of sessions) {
     const time = new Date(s.updatedAt).toLocaleString();
     const projectName = s.projectDir.split('/').pop() ?? s.projectDir;
-    log(`  ${s.id.slice(0, 8)}  ${projectName}  "${s.task}"  Round ${s.round}  [${s.status}]  ${time}`);
+    log(`  ${s.id.slice(0, 8)}  ${projectName}  "${s.task}"  [${s.status}]  ${time}`);
   }
   log('');
   log('Resume a session: duo resume <session-id>');
@@ -145,7 +145,7 @@ export function handleResume(
 
   log(`Resuming session: ${loaded.metadata.task}`);
   log(`Coder=${loaded.metadata.coder}, Reviewer=${loaded.metadata.reviewer}`);
-  log(`Round ${loaded.state.round}, Status: ${loaded.state.status}`);
+  log(`Status: ${loaded.state.status}`);
   log(`Directory: ${loaded.metadata.projectDir}`);
 
   return { success: true, session: loaded };
@@ -185,7 +185,7 @@ export function handleLog(
 
   for (const entry of entries) {
     const time = new Date(entry.timestamp).toLocaleString();
-    log(`[${entry.seq}] ${time}  Round ${entry.round}  ${entry.decisionType}`);
+    log(`[${entry.seq}] ${time}  ${entry.decisionType}`);
     log(`    Input:  ${entry.inputSummary}`);
     log(`    Output: ${entry.outputSummary}`);
     if (entry.latencyMs !== undefined) {

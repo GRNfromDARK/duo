@@ -15,8 +15,6 @@ export type WorkflowStatus = 'idle' | 'active' | 'error' | 'routing' | 'interrup
 
 export interface StatusBarProps {
   projectPath: string;
-  round: number;
-  maxRounds: number;
   status: WorkflowStatus;
   activeAgent: string | null;
   tokenCount: number;
@@ -69,8 +67,6 @@ interface Segment {
 
 export function StatusBar({
   projectPath,
-  round,
-  maxRounds,
   status,
   activeAgent,
   tokenCount,
@@ -86,8 +82,6 @@ export function StatusBar({
   const cfg = STATUS_CONFIG[status];
   const tokenStr = `${formatTokens(tokenCount)}tok`;
   const agentStr = activeAgent ? `${activeAgent} ${cfg.icon} ${cfg.label}` : `${cfg.icon} ${cfg.label}`;
-  const progressBar = buildProgressBar(round, maxRounds, 6);
-  const roundStr = `${progressBar} ${round}/${maxRounds}`;
 
   // Build model display string: show active role's model if set
   const activeModel = activeAgent?.includes(':Coder') ? coderModel
@@ -106,7 +100,6 @@ export function StatusBar({
   const leftSegments: Segment[] = [
     { text: 'Duo', priority: 1 },
     { text: projectPath, priority: 4 },
-    { text: roundStr, priority: 1 },
     { text: agentStr, color: cfg.color, priority: 2 },
   ];
   if (modelStr) leftSegments.push({ text: modelStr, dimColor: true, priority: 4 });

@@ -15,7 +15,6 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { SessionConfig } from '../types/session.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
-import type { ConvergenceLogEntry } from '../god/god-prompt-generator.js';
 import { PROMPT_LOG_FILENAME } from './prompt-log.js';
 
 export interface SessionMetadata {
@@ -33,7 +32,6 @@ export interface SessionMetadata {
 }
 
 export interface SessionState {
-  round: number;
   status: string;
   currentRole: string;
   /** CLI session ID for the coder adapter (e.g. Claude Code session_id, Codex thread_id) */
@@ -46,8 +44,6 @@ export interface SessionState {
   godAdapter?: string;
   /** God task analysis — written on first round only (FR-011) */
   godTaskAnalysis?: GodTaskAnalysis;
-  /** God convergence log — appended each round (FR-011, NFR-007: summary ≤ 200 chars) */
-  godConvergenceLog?: ConvergenceLogEntry[];
   /** Current phase ID for compound tasks — persisted for duo resume */
   currentPhaseId?: string | null;
   /** Card E.2: Clarification context — persisted for duo resume when in CLARIFYING state */
@@ -58,7 +54,6 @@ export interface SessionState {
 }
 
 export interface HistoryEntry {
-  round: number;
   role: string;
   content: string;
   timestamp: number;
@@ -79,7 +74,6 @@ export interface SessionSummary {
   id: string;
   projectDir: string;
   task: string;
-  round: number;
   status: string;
   coder: string;
   reviewer: string;
@@ -126,8 +120,7 @@ function atomicWriteSync(filePath: string, data: string): void {
 function isValidHistoryEntry(obj: unknown): obj is HistoryEntry {
   if (typeof obj !== 'object' || obj === null) return false;
   const o = obj as Record<string, unknown>;
-  return typeof o.round === 'number'
-    && typeof o.role === 'string'
+  return typeof o.role === 'string'
     && typeof o.content === 'string'
     && typeof o.timestamp === 'number';
 }
@@ -147,7 +140,6 @@ function isValidSnapshot(obj: unknown): obj is SessionSnapshot {
     && typeof m.reviewer === 'string'
     && typeof m.createdAt === 'number'
     && typeof m.updatedAt === 'number'
-    && typeof s.round === 'number'
     && typeof s.status === 'string'
     && typeof s.currentRole === 'string';
 }
@@ -192,7 +184,6 @@ export class SessionManager {
     };
 
     const initialState: SessionState = {
-      round: 0,
       status: 'created',
       currentRole: 'coder',
     };
@@ -312,7 +303,6 @@ export class SessionManager {
           id: snapshot.metadata.id,
           projectDir: snapshot.metadata.projectDir,
           task: snapshot.metadata.task,
-          round: snapshot.state.round,
           status: snapshot.state.status,
           coder: snapshot.metadata.coder,
           reviewer: snapshot.metadata.reviewer,

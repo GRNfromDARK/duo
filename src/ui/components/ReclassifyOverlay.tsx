@@ -17,7 +17,6 @@ import {
 
 export interface ReclassifyOverlayProps {
   currentType: string;
-  currentRound: number;
   onSelect: (newType: string) => void;
   onCancel: () => void;
 }
@@ -32,12 +31,11 @@ const RECLASSIFY_LABELS: Record<string, string> = {
 
 export function ReclassifyOverlay({
   currentType,
-  currentRound,
   onSelect,
   onCancel,
 }: ReclassifyOverlayProps): React.ReactElement {
   const [state, setState] = useState<ReclassifyOverlayState>(() =>
-    createReclassifyState(currentType as TaskType, currentRound),
+    createReclassifyState(currentType as TaskType),
   );
 
   useInput((input, key) => {
@@ -79,10 +77,6 @@ export function ReclassifyOverlay({
           <Text dimColor>{'Current type   '}</Text>
           <Text bold>[{currentType}]</Text>
           <Text dimColor>{'  '}{RECLASSIFY_LABELS[currentType] ?? ''}</Text>
-        </Box>
-        <Box>
-          <Text dimColor>{'Current round  '}</Text>
-          <Text>Round {currentRound}</Text>
         </Box>
       </Box>
 

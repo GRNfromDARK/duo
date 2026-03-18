@@ -8,7 +8,6 @@ import { Box, Text } from 'ink';
 export interface ContextOverlayProps {
   columns: number;
   rows: number;
-  roundNumber: number;
   coderName: string;
   reviewerName: string;
   taskSummary: string;
@@ -18,7 +17,6 @@ export interface ContextOverlayProps {
 export function ContextOverlay({
   columns,
   rows,
-  roundNumber,
   coderName,
   reviewerName,
   taskSummary,
@@ -38,13 +36,6 @@ export function ContextOverlay({
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <Box width={16}>
-            <Text bold>Round:</Text>
-          </Box>
-          <Text>{roundNumber}</Text>
-        </Box>
-
         <Box>
           <Box width={16}>
             <Text bold>Coder:</Text>

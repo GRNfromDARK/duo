@@ -42,10 +42,3 @@ export interface StartResult {
   detectedCLIs: string[];
 }
 
-export interface RoundRecord {
-  index: number;
-  coderOutput: string;
-  reviewerOutput: string;
-  summary?: string;
-  timestamp: number;
-}
