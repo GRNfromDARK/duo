@@ -1,4 +1,3 @@
-import type { ChoiceDetectionResult } from '../decision/choice-detector.js';
 import type { WorkflowContext } from '../engine/workflow-machine.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
 import type { RoundRecord } from '../session/context-manager.js';
@@ -23,18 +22,6 @@ export type StreamOutcome =
   | { kind: 'success'; fullText: string; displayText: string }
   | { kind: 'error'; fullText: string; displayText: string; errorMessage: string }
   | { kind: 'no_output'; fullText: string; displayText: string };
-
-export interface ChoiceRoute {
-  source: 'coder' | 'reviewer';
-  target: 'coder' | 'reviewer';
-  prompt: string;
-}
-
-export interface RouteDecision {
-  event: 'ROUTE_TO_REVIEW' | 'ROUTE_TO_EVALUATE' | 'ROUTE_TO_CODER';
-  choiceRoute?: ChoiceRoute;
-  clearChoiceRoute?: boolean;
-}
 
 export type UserDecision =
   | { type: 'confirm'; action: 'accept' | 'continue'; pendingInstruction?: string }
@@ -66,11 +53,6 @@ export interface RestoredSessionRuntime {
   godConvergenceLog?: ConvergenceLogEntry[];
   /** Current phase ID for compound tasks */
   currentPhaseId?: string | null;
-}
-
-interface ChoiceDetectorLike {
-  detect(text: string): ChoiceDetectionResult;
-  buildForwardPrompt(result: ChoiceDetectionResult, taskContext: string): string;
 }
 
 const CHARS_PER_TOKEN = 4;
@@ -212,54 +194,6 @@ export function resolveUserDecision(
   return null;
 }
 
-export function decidePostCodeRoute(
-  output: string,
-  taskContext: string,
-  detector: ChoiceDetectorLike,
-  activeChoiceRoute: ChoiceRoute | null,
-): RouteDecision {
-  if (activeChoiceRoute?.source === 'reviewer' && activeChoiceRoute.target === 'coder') {
-    return {
-      event: 'ROUTE_TO_REVIEW',
-      clearChoiceRoute: true,
-    };
-  }
-
-  const detection = detector.detect(output);
-  if (detection.detected) {
-    return {
-      event: 'ROUTE_TO_REVIEW',
-      choiceRoute: createChoiceRoute('coder', taskContext, detector, detection),
-    };
-  }
-
-  return { event: 'ROUTE_TO_REVIEW' };
-}
-
-export function decidePostReviewRoute(
-  output: string,
-  taskContext: string,
-  detector: ChoiceDetectorLike,
-  activeChoiceRoute: ChoiceRoute | null,
-): RouteDecision {
-  if (activeChoiceRoute?.source === 'coder' && activeChoiceRoute.target === 'reviewer') {
-    return {
-      event: 'ROUTE_TO_CODER',
-      clearChoiceRoute: true,
-    };
-  }
-
-  const detection = detector.detect(output);
-  if (detection.detected) {
-    return {
-      event: 'ROUTE_TO_CODER',
-      choiceRoute: createChoiceRoute('reviewer', taskContext, detector, detection),
-    };
-  }
-
-  return { event: 'ROUTE_TO_EVALUATE' };
-}
-
 export function buildRestoredSessionRuntime(
   loaded: LoadedSession,
   config: SessionConfig,
@@ -298,19 +232,6 @@ export function buildRestoredSessionRuntime(
     godTaskAnalysis: loaded.state.godTaskAnalysis,
     godConvergenceLog: loaded.state.godConvergenceLog,
     currentPhaseId: loaded.state.currentPhaseId ?? null,
-  };
-}
-
-function createChoiceRoute(
-  source: 'coder' | 'reviewer',
-  taskContext: string,
-  detector: ChoiceDetectorLike,
-  detection: ChoiceDetectionResult,
-): ChoiceRoute {
-  return {
-    source,
-    target: source === 'coder' ? 'reviewer' : 'coder',
-    prompt: detector.buildForwardPrompt(detection, taskContext),
   };
 }
 

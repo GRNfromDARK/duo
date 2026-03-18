@@ -19,7 +19,6 @@ import type { RoundRecord } from '../../session/context-manager.js';
 import { SessionManager } from '../../session/session-manager.js';
 import type { LoadedSession } from '../../session/session-manager.js';
 import { ConvergenceService } from '../../decision/convergence-service.js';
-import { ChoiceDetector } from '../../decision/choice-detector.js';
 import { MainLayout } from './MainLayout.js';
 import type { WorkflowStateHint } from './MainLayout.js';
 import type { WorkflowStatus } from './StatusBar.js';
@@ -37,7 +36,6 @@ import {
   createStreamAggregation,
   finalizeStreamAggregation,
   resolveUserDecision,
-  type ChoiceRoute,
 } from '../session-runner-state.js';
 import * as path from 'node:path';
 import { initializeTask } from '../../god/task-init.js';
@@ -303,7 +301,6 @@ function SessionRunner({
     }),
   );
   const convergenceRef = useRef(new ConvergenceService({ maxRounds: MAX_ROUNDS }));
-  const choiceDetectorRef = useRef(new ChoiceDetector());
   const sessionManagerRef = useRef(
     new SessionManager(path.join(config.projectDir, '.duo', 'sessions')),
   );
@@ -323,7 +320,6 @@ function SessionRunner({
       ? (resumeSession.state.currentRole as 'coder' | 'reviewer' | null)
       : null,
   );
-  const choiceRouteRef = useRef<ChoiceRoute | null>(null);
   const convergenceLogRef = useRef<ConvergenceLogEntry[]>(restoredRuntime?.godConvergenceLog ?? []);
   const lastUnresolvedIssuesRef = useRef<string[]>([]);
   const initializedRef = useRef(false);
@@ -677,36 +673,29 @@ function SessionRunner({
         const shouldSkipHistory = isSessionCapable(adapter) && adapter.hasActiveSession();
 
         // Prompt generation — direct call (pure template, no retry needed)
-        let prompt: string;
-        let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
-        if (choiceRouteRef.current?.target === 'coder') {
-          prompt = choiceRouteRef.current.prompt;
-          promptSource = 'choice_route';
-        } else {
-          if (!taskAnalysis) throw new Error('No taskAnalysis available');
-          prompt = generateCoderPrompt({
-            taskType: taskAnalysis.taskType as PromptContext['taskType'],
-            round: ctx.round,
-            maxRounds: ctx.maxRounds,
-            taskGoal: config.task,
-            lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
-            unresolvedIssues: lastUnresolvedIssuesRef.current,
-            convergenceLog: convergenceLogRef.current,
-            instruction: interruptInstruction,
-            phaseId: currentPhaseId ?? undefined,
-            phaseType: currentPhaseId
-              ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-              : undefined,
-            isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
-              || reviewerFeedbackPendingRef.current,
-          }, {
-            sessionDir: sessionIdRef.current
-              ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
-              : path.join(config.projectDir, '.duo', 'sessions'),
-            seq: ++auditSeqRef.current,
-          });
-          promptSource = 'god_dynamic';
-        }
+        if (!taskAnalysis) throw new Error('No taskAnalysis available');
+        const prompt = generateCoderPrompt({
+          taskType: taskAnalysis.taskType as PromptContext['taskType'],
+          round: ctx.round,
+          maxRounds: ctx.maxRounds,
+          taskGoal: config.task,
+          lastReviewerOutput: ctx.lastReviewerOutput ?? undefined,
+          unresolvedIssues: lastUnresolvedIssuesRef.current,
+          convergenceLog: convergenceLogRef.current,
+          instruction: interruptInstruction,
+          phaseId: currentPhaseId ?? undefined,
+          phaseType: currentPhaseId
+            ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
+            : undefined,
+          isPostReviewerRouting: lastWorkerRoleRef.current === 'reviewer'
+            || reviewerFeedbackPendingRef.current,
+        }, {
+          sessionDir: sessionIdRef.current
+            ? path.join(config.projectDir, '.duo', 'sessions', sessionIdRef.current)
+            : path.join(config.projectDir, '.duo', 'sessions'),
+          seq: ++auditSeqRef.current,
+        });
+        const promptSource = 'god_dynamic';
 
         if (sessionIdRef.current) {
           try {
@@ -939,27 +928,20 @@ function SessionRunner({
           : undefined;
 
         // Prompt generation — direct call (pure template, no retry needed)
-        let prompt: string;
-        let promptSource: 'choice_route' | 'god_dynamic' | 'context_fallback';
-        if (choiceRouteRef.current?.target === 'reviewer') {
-          prompt = choiceRouteRef.current.prompt;
-          promptSource = 'choice_route';
-        } else {
-          if (!taskAnalysis) throw new Error('No taskAnalysis available');
-          prompt = generateReviewerPrompt({
-            taskType: taskAnalysis.taskType,
-            round: ctx.round,
-            maxRounds: ctx.maxRounds,
-            taskGoal: config.task,
-            lastCoderOutput: ctx.lastCoderOutput ?? undefined,
-            instruction: interruptInstruction,
-            phaseId: currentPhaseId ?? undefined,
-            phaseType: currentPhaseId
-              ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
-              : undefined,
-          });
-          promptSource = 'god_dynamic';
-        }
+        if (!taskAnalysis) throw new Error('No taskAnalysis available');
+        const prompt = generateReviewerPrompt({
+          taskType: taskAnalysis.taskType,
+          round: ctx.round,
+          maxRounds: ctx.maxRounds,
+          taskGoal: config.task,
+          lastCoderOutput: ctx.lastCoderOutput ?? undefined,
+          instruction: interruptInstruction,
+          phaseId: currentPhaseId ?? undefined,
+          phaseType: currentPhaseId
+            ? taskAnalysis.phases?.find(p => p.id === currentPhaseId)?.type as PromptContext['phaseType']
+            : undefined,
+        });
+        const promptSource = 'god_dynamic';
 
         if (sessionIdRef.current) {
           try {

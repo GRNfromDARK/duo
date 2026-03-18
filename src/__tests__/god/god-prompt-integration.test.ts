@@ -48,14 +48,8 @@ function selectCoderPrompt(opts: {
   convergenceLog: ConvergenceLogEntry[];
   sessionDir: string;
   auditSeq: number;
-  choiceRoute?: { target: string; prompt: string } | null;
   rounds: Array<{ index: number; coderOutput: string; reviewerOutput: string; timestamp: number }>;
 }): string {
-  // If there's a choice route for coder, use it directly (interrupt/choice)
-  if (opts.choiceRoute?.target === 'coder') {
-    return opts.choiceRoute.prompt;
-  }
-
   // God prompt path: available + taskAnalysis exists
   if (opts.godAvailable && opts.taskAnalysis) {
     return generateCoderPrompt({
@@ -92,13 +86,8 @@ function selectReviewerPrompt(opts: {
   config: { task: string };
   ctx: { round: number; maxRounds: number; lastCoderOutput?: string | null };
   rounds: Array<{ index: number; coderOutput: string; reviewerOutput: string; timestamp: number }>;
-  choiceRoute?: { target: string; prompt: string } | null;
   lastReviewerOutput?: string;
 }): string {
-  if (opts.choiceRoute?.target === 'reviewer') {
-    return opts.choiceRoute.prompt;
-  }
-
   if (opts.godAvailable && opts.taskAnalysis) {
     return generateReviewerPrompt({
       taskType: opts.taskAnalysis.taskType,
@@ -414,48 +403,6 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
     });
 
     expect(prompt).toContain('You are a Reviewer');
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════
-// AC-8: choiceRoute still takes precedence
-// ══════════════════════════════════════════════════════════════════
-
-describe('AC-8: choiceRoute takes precedence over God prompt', () => {
-  test('choiceRoute for coder overrides God prompt', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectCoderPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement feature' },
-      ctx: { round: 1, maxRounds: 5 },
-      lastUnresolvedIssues: [],
-      convergenceLog: [],
-      sessionDir: '/tmp/test',
-      auditSeq: 1,
-      choiceRoute: { target: 'coder', prompt: 'Custom choice prompt' },
-      rounds: [],
-    });
-
-    expect(prompt).toBe('Custom choice prompt');
-  });
-
-  test('choiceRoute for reviewer overrides God prompt', () => {
-    const cm = makeContextManager();
-
-    const prompt = selectReviewerPrompt({
-      godAvailable: true,
-      contextManager: cm,
-      taskAnalysis: { taskType: 'code' },
-      config: { task: 'Implement feature' },
-      ctx: { round: 1, maxRounds: 5, lastCoderOutput: 'code' },
-      rounds: [],
-      choiceRoute: { target: 'reviewer', prompt: 'Custom reviewer prompt' },
-    });
-
-    expect(prompt).toBe('Custom reviewer prompt');
   });
 });
 
