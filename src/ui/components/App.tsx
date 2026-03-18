@@ -632,12 +632,6 @@ function SessionRunner({
           : {}),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: {
-          level: watchdogRef.current.isPaused() ? 'L4' as const : 'L1' as const,
-          consecutiveFailures: watchdogRef.current.getConsecutiveFailures(),
-          godDisabled: watchdogRef.current.isPaused(),
-          fallbackActive: watchdogRef.current.isPaused(),
-        },
         currentPhaseId,
         // Card E.2: persist clarification context for duo resume
         ...(stateValue === 'CLARIFYING' ? {
@@ -1620,12 +1614,6 @@ function SessionRunner({
         })(),
         ...(taskAnalysisRef.current ? { godTaskAnalysis: taskAnalysisRef.current } : {}),
         godConvergenceLog: convergenceLogRef.current,
-        degradationState: {
-          level: watchdogRef.current.isPaused() ? 'L4' as const : 'L1' as const,
-          consecutiveFailures: watchdogRef.current.getConsecutiveFailures(),
-          godDisabled: watchdogRef.current.isPaused(),
-          fallbackActive: watchdogRef.current.isPaused(),
-        },
         currentPhaseId,
       });
     } catch {

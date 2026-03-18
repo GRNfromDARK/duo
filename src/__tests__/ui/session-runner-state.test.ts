@@ -320,13 +320,6 @@ describe('session-runner-state', () => {
           summary: 'round 0',
         },
       ];
-      const degradationState = {
-        level: 'L1' as const,
-        consecutiveFailures: 0,
-        godDisabled: false,
-        fallbackActive: false,
-      };
-
       const loaded: LoadedSession = {
         metadata: {
           id: 'session-god-1',
@@ -346,7 +339,6 @@ describe('session-runner-state', () => {
           godAdapter: 'codex',
           godTaskAnalysis,
           godConvergenceLog,
-          degradationState,
         },
         history: [
           { round: 0, role: 'coder', content: 'code', timestamp: 10 },
@@ -364,7 +356,6 @@ describe('session-runner-state', () => {
       expect(runtime.godSessionId).toBe('god_ses_123');
       expect(runtime.godTaskAnalysis).toEqual(godTaskAnalysis);
       expect(runtime.godConvergenceLog).toEqual(godConvergenceLog);
-      expect(runtime.degradationState).toEqual(degradationState);
     });
 
     it('passes through currentPhaseId from persisted state (BUG-6 regression)', () => {
@@ -493,7 +484,6 @@ describe('session-runner-state', () => {
       expect(runtime.godSessionId).toBeUndefined();
       expect(runtime.godTaskAnalysis).toBeUndefined();
       expect(runtime.godConvergenceLog).toBeUndefined();
-      expect(runtime.degradationState).toBeUndefined();
     });
   });
 });

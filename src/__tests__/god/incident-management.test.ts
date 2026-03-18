@@ -10,7 +10,7 @@
  * AC-5: God can decide wait with reason for user
  * AC-6: God can decide stop with management summary
  * AC-7: empty_output severity escalates on consecutive occurrences
- * AC-8: Consecutive incident failures trigger DegradationManager degradation
+ * AC-8: Consecutive incident failures tracked by IncidentTracker
  * AC-9: All tests pass
  * AC-10: Existing tests unaffected
  */
@@ -24,7 +24,6 @@ import {
 import type { Observation } from '../../types/observation.js';
 import { GodAuditLogger } from '../../god/god-audit.js';
 import { executeActions, type HandExecutionContext, type HandAdapter } from '../../god/hand-executor.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
 import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -418,50 +417,12 @@ describe('Incident Audit', () => {
   });
 });
 
-// ── Task 4: Degradation Manager Integration (AC-8) ──
+// ── Task 4: Incident Tracking (AC-8) ──
 
-describe('Degradation Manager Integration', () => {
-  // AC-8: Consecutive incident failures trigger degradation
-  describe('AC-8: incident triggers degradation', () => {
-    it('creates incident observation for degradation when DegradationManager enters L4', async () => {
-      const { createDegradationObservation } = await import('../../god/observation-classifier.js');
-
-      const dm = new DegradationManager();
-
-      // Trigger 3 consecutive failures → L4
-      dm.handleGodFailure({ kind: 'process_exit', message: 'crash 1' });
-      dm.handleGodFailure({ kind: 'process_exit', message: 'crash 2' });
-      const action = dm.handleGodFailure({ kind: 'process_exit', message: 'crash 3' });
-
-      expect(action.type).toBe('fallback');
-      expect(dm.getState().godDisabled).toBe(true);
-
-      // Create a degradation observation for God (or for the system log)
-      const obs = createDegradationObservation(dm.getState(), { round: 5, phaseId: 'phase-2' });
-      expect(obs.type).toBe('adapter_unavailable');
-      expect(obs.severity).toBe('fatal');
-      expect(obs.source).toBe('runtime');
-      expect(obs.summary).toContain('L4');
-    });
-
-    it('creates warning observation for non-L4 degradation', async () => {
-      const { createDegradationObservation } = await import('../../god/observation-classifier.js');
-
-      const dm = new DegradationManager();
-      dm.handleGodFailure({ kind: 'process_exit', message: 'crash 1' });
-
-      const state = dm.getState();
-      expect(state.godDisabled).toBe(false);
-
-      const obs = createDegradationObservation(state, { round: 2 });
-      expect(obs.severity).toBe('warning');
-      expect(obs.source).toBe('runtime');
-    });
-  });
-
-  // IncidentTracker + DegradationManager cooperation
-  describe('IncidentTracker feeds DegradationManager', () => {
-    it('consecutive incidents tracked by IncidentTracker can inform degradation decisions', async () => {
+describe('Incident Tracking', () => {
+  // AC-8: Consecutive incident failures tracked by IncidentTracker
+  describe('AC-8: IncidentTracker tracks consecutive failures', () => {
+    it('consecutive incidents tracked by IncidentTracker can inform pause decisions', async () => {
       const { IncidentTracker } = await import('../../god/observation-classifier.js');
       const tracker = new IncidentTracker();
 
@@ -473,8 +434,8 @@ describe('Degradation Manager Integration', () => {
 
       expect(tracker.getConsecutiveCount('quota_exhausted')).toBe(3);
 
-      // This count can be used to decide whether to trigger degradation
-      // (The integration is: tracker detects consecutive incidents → God decides → DegradationManager if needed)
+      // This count can be used to decide whether to pause
+      // (The integration is: tracker detects consecutive incidents → system pauses)
     });
   });
 });

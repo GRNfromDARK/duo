@@ -1,6 +1,5 @@
 import type { ChoiceDetectionResult } from '../decision/choice-detector.js';
 import type { WorkflowContext } from '../engine/workflow-machine.js';
-import type { DegradationState } from '../types/degradation.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
 import type { RoundRecord } from '../session/context-manager.js';
 import type { LoadedSession, SessionState } from '../session/session-manager.js';
@@ -65,8 +64,6 @@ export interface RestoredSessionRuntime {
   godTaskAnalysis?: GodTaskAnalysis;
   /** God convergence log restored from session (FR-011) */
   godConvergenceLog?: ConvergenceLogEntry[];
-  /** God degradation state restored from session (FR-G01) */
-  degradationState?: DegradationState;
   /** Current phase ID for compound tasks */
   currentPhaseId?: string | null;
 }
@@ -300,7 +297,6 @@ export function buildRestoredSessionRuntime(
     godSessionId: loaded.state.godSessionId,
     godTaskAnalysis: loaded.state.godTaskAnalysis,
     godConvergenceLog: loaded.state.godConvergenceLog,
-    degradationState: loaded.state.degradationState,
     currentPhaseId: loaded.state.currentPhaseId ?? null,
   };
 }

@@ -3,7 +3,7 @@
  * Source: FR-003 (AC-013, AC-014, AC-015), FR-003a, FR-003b, FR-003c
  *
  * Tests the integration logic: when God is available, generateCoderPrompt/generateReviewerPrompt
- * are used; when God is degraded, v1 ContextManager is used as fallback.
+ * are used; when God is unavailable, v1 ContextManager is used as fallback.
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
@@ -14,9 +14,6 @@ import {
 import type { PromptContext } from '../../god/god-prompt-generator.js';
 import type { ConvergenceLogEntry } from '../../god/god-convergence.js';
 import { ContextManager } from '../../session/context-manager.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
-import { ChoiceDetector } from '../../decision/choice-detector.js';
 
 // Mock audit log to avoid filesystem writes
 vi.mock('../../god/god-audit.js', () => ({
@@ -36,22 +33,13 @@ function makeContextManager() {
   return new ContextManager({ contextWindowSize: 200000 });
 }
 
-function makeDegradationManager(cm: ContextManager) {
-  return new DegradationManager({
-    fallbackServices: {
-      contextManager: cm,
-      convergenceService: new ConvergenceService({ maxRounds: 5 }),
-      choiceDetector: new ChoiceDetector(),
-    },
-  });
-}
-
 /**
  * Simulates the prompt selection logic from App.tsx CODING useEffect.
  * This mirrors the code path in B.4 implementation.
+ * godAvailable replaces the old DegradationManager.isGodAvailable() check.
  */
 function selectCoderPrompt(opts: {
-  degradationManager: DegradationManager;
+  godAvailable: boolean;
   contextManager: ContextManager;
   taskAnalysis: { taskType: string } | null;
   config: { task: string };
@@ -69,7 +57,7 @@ function selectCoderPrompt(opts: {
   }
 
   // God prompt path: available + taskAnalysis exists
-  if (opts.degradationManager.isGodAvailable() && opts.taskAnalysis) {
+  if (opts.godAvailable && opts.taskAnalysis) {
     return generateCoderPrompt({
       taskType: opts.taskAnalysis.taskType as PromptContext['taskType'],
       round: opts.ctx.round,
@@ -98,7 +86,7 @@ function selectCoderPrompt(opts: {
  * Simulates the prompt selection logic from App.tsx REVIEWING useEffect.
  */
 function selectReviewerPrompt(opts: {
-  degradationManager: DegradationManager;
+  godAvailable: boolean;
   contextManager: ContextManager;
   taskAnalysis: { taskType: string } | null;
   config: { task: string };
@@ -111,7 +99,7 @@ function selectReviewerPrompt(opts: {
     return opts.choiceRoute.prompt;
   }
 
-  if (opts.degradationManager.isGodAvailable() && opts.taskAnalysis) {
+  if (opts.godAvailable && opts.taskAnalysis) {
     return generateReviewerPrompt({
       taskType: opts.taskAnalysis.taskType,
       round: opts.ctx.round,
@@ -138,17 +126,15 @@ function selectReviewerPrompt(opts: {
 
 describe('AC-1: God dynamically generates Coder prompt', () => {
   let cm: ContextManager;
-  let dm: DegradationManager;
 
   beforeEach(() => {
     cm = makeContextManager();
-    dm = makeDegradationManager(cm);
     mockAppendAuditLog.mockClear();
   });
 
   test('uses generateCoderPrompt when God is available and taskAnalysis exists', () => {
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement login' },
@@ -168,7 +154,7 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
 
   test('includes unresolvedIssues as required fixes in Coder prompt (FR-003b)', () => {
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement login' },
@@ -187,7 +173,7 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
 
   test('writes audit log entry for Coder prompt (AC-015)', () => {
     selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement login' },
@@ -216,16 +202,14 @@ describe('AC-1: God dynamically generates Coder prompt', () => {
 
 describe('AC-2: God dynamically generates Reviewer prompt', () => {
   let cm: ContextManager;
-  let dm: DegradationManager;
 
   beforeEach(() => {
     cm = makeContextManager();
-    dm = makeDegradationManager(cm);
   });
 
   test('uses generateReviewerPrompt when God is available and taskAnalysis exists', () => {
     const prompt = selectReviewerPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement login' },
@@ -246,16 +230,14 @@ describe('AC-2: God dynamically generates Reviewer prompt', () => {
 
 describe('AC-3: explore prompt has no execution verbs (AC-013)', () => {
   let cm: ContextManager;
-  let dm: DegradationManager;
 
   beforeEach(() => {
     cm = makeContextManager();
-    dm = makeDegradationManager(cm);
   });
 
   test('explore Coder prompt does not contain implement/create/write code', () => {
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'explore' },
       config: { task: 'Understand the auth flow' },
@@ -282,17 +264,15 @@ describe('AC-3: explore prompt has no execution verbs (AC-013)', () => {
 
 describe('AC-4: unresolvedIssues as Coder must-do list', () => {
   let cm: ContextManager;
-  let dm: DegradationManager;
 
   beforeEach(() => {
     cm = makeContextManager();
-    dm = makeDegradationManager(cm);
   });
 
   test('unresolvedIssues appear as numbered required fixes', () => {
     const issues = ['Fix null pointer in auth.ts:42', 'Add rate limiting', 'Handle timeout errors'];
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Fix auth bugs' },
@@ -312,7 +292,7 @@ describe('AC-4: unresolvedIssues as Coder must-do list', () => {
 
   test('empty unresolvedIssues does not add required fixes section', () => {
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Build feature' },
@@ -339,12 +319,11 @@ describe('AC-5: prompt summary written to audit log', () => {
 
   test('audit log entry contains full prompt summary without truncation', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
 
     // Create a long task goal to verify no truncation
     const longGoal = 'A'.repeat(1000);
     selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: longGoal },
@@ -367,18 +346,11 @@ describe('AC-5: prompt summary written to audit log', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
-  test('uses ContextManager.buildCoderPrompt when God is degraded', () => {
+  test('uses ContextManager.buildCoderPrompt when God is unavailable', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
-
-    // Degrade God by triggering multiple failures
-    for (let i = 0; i < 5; i++) {
-      dm.handleGodFailure({ kind: 'process_exit', message: 'test failure' });
-    }
-    expect(dm.isGodAvailable()).toBe(false);
 
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: false,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement feature' },
@@ -397,10 +369,9 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
 
   test('uses ContextManager.buildCoderPrompt when taskAnalysis is null', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
 
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: null,
       config: { task: 'Implement feature' },
@@ -415,16 +386,11 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
     expect(prompt).toContain('You are a Coder');
   });
 
-  test('uses ContextManager.buildReviewerPrompt when God is degraded', () => {
+  test('uses ContextManager.buildReviewerPrompt when God is unavailable', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
-
-    for (let i = 0; i < 5; i++) {
-      dm.handleGodFailure({ kind: 'process_exit', message: 'test failure' });
-    }
 
     const prompt = selectReviewerPrompt({
-      degradationManager: dm,
+      godAvailable: false,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement feature' },
@@ -437,10 +403,9 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
 
   test('uses ContextManager.buildReviewerPrompt when taskAnalysis is null', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
 
     const prompt = selectReviewerPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: null,
       config: { task: 'Implement feature' },
@@ -459,10 +424,9 @@ describe('AC-6: Fallback to v1 ContextManager when God unavailable', () => {
 describe('AC-8: choiceRoute takes precedence over God prompt', () => {
   test('choiceRoute for coder overrides God prompt', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
 
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement feature' },
@@ -480,10 +444,9 @@ describe('AC-8: choiceRoute takes precedence over God prompt', () => {
 
   test('choiceRoute for reviewer overrides God prompt', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
 
     const prompt = selectReviewerPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Implement feature' },
@@ -503,10 +466,9 @@ describe('AC-8: choiceRoute takes precedence over God prompt', () => {
 describe('Convergence log trend in Coder prompt', () => {
   test('includes convergence trend when log entries exist', () => {
     const cm = makeContextManager();
-    const dm = makeDegradationManager(cm);
 
     const prompt = selectCoderPrompt({
-      degradationManager: dm,
+      godAvailable: true,
       contextManager: cm,
       taskAnalysis: { taskType: 'code' },
       config: { task: 'Fix bugs' },

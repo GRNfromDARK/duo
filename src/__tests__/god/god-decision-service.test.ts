@@ -222,7 +222,7 @@ describe('GodDecisionService', () => {
     });
   });
 
-  // AC-5: Zod validation failure → JSON extraction → DegradationManager L3
+  // AC-5: Zod validation failure → JSON extraction → retry with extraction
   describe('AC-5: parse failure triggers degradation', () => {
     it('retries with JSON extraction on malformed JSON', async () => {
       // First call returns bad JSON, retry adapter returns valid

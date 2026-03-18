@@ -30,14 +30,10 @@ import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import { initializeTask } from '../../god/task-init.js';
 import { type ConvergenceLogEntry } from '../../god/god-convergence.js';
-import { DegradationManager, type FallbackServices } from '../../god/degradation-manager.js';
 import { withRetry, isPaused } from '../../ui/god-fallback.js';
 import { WatchdogService } from '../../god/watchdog.js';
 import { evaluatePhaseTransition, type Phase } from '../../god/phase-transition.js';
 import { restoreGodSession } from '../../god/god-session-persistence.js';
-import { ContextManager } from '../../session/context-manager.js';
-import { ConvergenceService } from '../../decision/convergence-service.js';
-import { ChoiceDetector } from '../../decision/choice-detector.js';
 import type { SessionState } from '../../session/session-manager.js';
 import * as godAudit from '../../god/god-audit.js';
 
@@ -163,14 +159,6 @@ function createFailingAdapter(error: Error): CLIAdapter {
     }),
     kill: async () => {},
     isRunning: () => false,
-  };
-}
-
-function createFallbackServices(): FallbackServices {
-  return {
-    contextManager: new ContextManager({ contextWindowSize: 200000, promptsDir: join(tmpDir, 'prompts') }),
-    convergenceService: new ConvergenceService({ maxRounds: 20 }),
-    choiceDetector: new ChoiceDetector(),
   };
 }
 
@@ -664,39 +652,6 @@ describe('Scenario 5: duo resume (AC-5)', () => {
     expect(state.godConvergenceLog).toHaveLength(2);
     expect(state.godConvergenceLog![1].classification).toBe('approved');
     expect(state.godConvergenceLog![1].shouldTerminate).toBe(true);
-  });
-
-  it('degradationState persisted and restored via DegradationManager', () => {
-    // Simulate L2 state with prior failures
-    const dm1 = new DegradationManager({ fallbackServices: createFallbackServices() });
-    dm1.handleGodFailure({ kind: 'process_exit', message: 'crash1' });
-    dm1.handleGodFailure({ kind: 'process_exit', message: 'crash2' });
-
-    const serialized = dm1.serializeState();
-    expect(serialized.consecutiveFailures).toBe(2);
-    expect(serialized.level).not.toBe('L1');
-
-    // Simulate save to SessionState
-    const state: SessionState = {
-      round: 2,
-      status: 'CODING',
-      currentRole: 'coder',
-      degradationState: serialized,
-    };
-
-    // Simulate restore
-    const dm2 = new DegradationManager({
-      fallbackServices: createFallbackServices(),
-      restoredState: state.degradationState,
-    });
-
-    expect(dm2.getState().consecutiveFailures).toBe(2);
-    expect(dm2.isGodAvailable()).toBe(true); // not L4 yet
-
-    // One more failure → L4
-    dm2.handleGodFailure({ kind: 'timeout', message: 'crash3' });
-    expect(dm2.isGodAvailable()).toBe(false);
-    expect(dm2.getState().level).toBe('L4');
   });
 
   it('full resume flow: RESUMING → CODING with restored God state', () => {

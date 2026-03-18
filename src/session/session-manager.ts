@@ -16,7 +16,6 @@ import * as crypto from 'node:crypto';
 import type { SessionConfig } from '../types/session.js';
 import type { GodTaskAnalysis } from '../types/god-schemas.js';
 import type { ConvergenceLogEntry } from '../god/god-convergence.js';
-import type { DegradationState } from '../types/degradation.js';
 import { PROMPT_LOG_FILENAME } from './prompt-log.js';
 
 export interface SessionMetadata {
@@ -49,8 +48,6 @@ export interface SessionState {
   godTaskAnalysis?: GodTaskAnalysis;
   /** God convergence log — appended each round (FR-011, NFR-007: summary ≤ 200 chars) */
   godConvergenceLog?: ConvergenceLogEntry[];
-  /** God degradation state — persisted for duo resume (FR-G01) */
-  degradationState?: DegradationState;
   /** Current phase ID for compound tasks — persisted for duo resume */
   currentPhaseId?: string | null;
   /** Card E.2: Clarification context — persisted for duo resume when in CLARIFYING state */

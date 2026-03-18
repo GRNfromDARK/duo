@@ -392,81 +392,6 @@ describe('SessionManager — list sessions', () => {
   });
 });
 
-// ─── Regression: BUG-3 R12 — DegradationState persisted in SessionState ───
-
-describe('test_regression_bug_r12_3: degradationState persistence', () => {
-  test('saveState persists degradationState to snapshot.json', () => {
-    const mgr = new SessionManager(sessionsDir);
-    const session = mgr.createSession(makeConfig());
-
-    const degradationState = {
-      level: 'L4' as const,
-      consecutiveFailures: 3,
-      godDisabled: true,
-      fallbackActive: true,
-      lastError: 'timeout after 30s',
-    };
-
-    mgr.saveState(session.id, {
-      round: 5,
-      status: 'coding',
-      currentRole: 'coder',
-      degradationState,
-    });
-
-    const loaded = mgr.loadSession(session.id);
-    expect(loaded.state.degradationState).toBeDefined();
-    expect(loaded.state.degradationState!.level).toBe('L4');
-    expect(loaded.state.degradationState!.godDisabled).toBe(true);
-    expect(loaded.state.degradationState!.consecutiveFailures).toBe(3);
-    expect(loaded.state.degradationState!.lastError).toBe('timeout after 30s');
-  });
-
-  test('degradationState survives save/load roundtrip (simulates duo resume)', async () => {
-    const mgr = new SessionManager(sessionsDir);
-    const session = mgr.createSession(makeConfig());
-
-    // Save L4 state
-    mgr.saveState(session.id, {
-      round: 8,
-      status: 'coding',
-      currentRole: 'coder',
-      degradationState: {
-        level: 'L4',
-        consecutiveFailures: 3,
-        godDisabled: true,
-        fallbackActive: true,
-      },
-    });
-
-    // Simulate duo resume — load and verify degradation state is available
-    const loaded = mgr.loadSession(session.id);
-    expect(loaded.state.degradationState).toBeDefined();
-    expect(loaded.state.degradationState!.godDisabled).toBe(true);
-
-    // Verify it can be passed to DegradationManager constructor
-    const { DegradationManager } = await import('../../god/degradation-manager.js');
-    const dm = new DegradationManager({ restoredState: loaded.state.degradationState });
-    expect(dm.isGodAvailable()).toBe(false);
-    expect(dm.getState().level).toBe('L4');
-  });
-
-  test('SessionState without degradationState loads correctly (backward compat)', () => {
-    const mgr = new SessionManager(sessionsDir);
-    const session = mgr.createSession(makeConfig());
-
-    // Save without degradationState
-    mgr.saveState(session.id, {
-      round: 1,
-      status: 'coding',
-      currentRole: 'coder',
-    });
-
-    const loaded = mgr.loadSession(session.id);
-    expect(loaded.state.degradationState).toBeUndefined();
-  });
-});
-
 // ─── Session ID uniqueness ───
 
 describe('SessionManager — ID generation', () => {
@@ -575,7 +500,7 @@ describe('Round6 BUG-4: updatedAt no +1ms drift when now > updatedAt', () => {
 // ─── Card C.4: God session persistence fields ───
 
 describe('SessionManager — God session persistence (C.4)', () => {
-  test('saveState persists God fields (godAdapter, godTaskAnalysis, godConvergenceLog, degradationState)', () => {
+  test('saveState persists God fields (godAdapter, godTaskAnalysis, godConvergenceLog)', () => {
     const mgr = new SessionManager(sessionsDir);
     const session = mgr.createSession(makeConfig({ god: 'codex' }));
 
@@ -606,14 +531,6 @@ describe('SessionManager — God session persistence (C.4)', () => {
         summary: 'round 1',
       },
     ];
-    const degradationState = {
-      level: 'L2' as const,
-      consecutiveFailures: 1,
-      godDisabled: false,
-      fallbackActive: false,
-      lastError: 'timeout',
-    };
-
     mgr.saveState(session.id, {
       round: 2,
       status: 'coding',
@@ -622,7 +539,6 @@ describe('SessionManager — God session persistence (C.4)', () => {
       godAdapter: 'codex',
       godTaskAnalysis,
       godConvergenceLog,
-      degradationState,
     });
 
     const loaded = mgr.loadSession(session.id);
@@ -630,7 +546,6 @@ describe('SessionManager — God session persistence (C.4)', () => {
     expect(loaded.state.godAdapter).toBe('codex');
     expect(loaded.state.godTaskAnalysis).toEqual(godTaskAnalysis);
     expect(loaded.state.godConvergenceLog).toEqual(godConvergenceLog);
-    expect(loaded.state.degradationState).toEqual(degradationState);
   });
 
   test('loadSession returns undefined God fields when not saved', () => {
@@ -644,6 +559,5 @@ describe('SessionManager — God session persistence (C.4)', () => {
     expect(loaded.state.godAdapter).toBeUndefined();
     expect(loaded.state.godTaskAnalysis).toBeUndefined();
     expect(loaded.state.godConvergenceLog).toBeUndefined();
-    expect(loaded.state.degradationState).toBeUndefined();
   });
 });

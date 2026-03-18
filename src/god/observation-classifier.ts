@@ -244,30 +244,6 @@ export class IncidentTracker {
   }
 }
 
-/**
- * Create an observation representing a DegradationManager state change.
- * Used when DegradationManager enters L4 (god disabled) or fallback mode.
- */
-export function createDegradationObservation(
-  state: { level: string; godDisabled: boolean; consecutiveFailures: number; lastError?: string },
-  meta: { round: number; phaseId?: string },
-): Observation {
-  const severity = state.godDisabled ? 'fatal' as const : 'warning' as const;
-  const summary = state.godDisabled
-    ? `Degradation ${state.level}: God disabled after ${state.consecutiveFailures} consecutive failures`
-    : `Degradation ${state.level}: ${state.consecutiveFailures} consecutive failures`;
-
-  return {
-    source: 'runtime',
-    type: 'adapter_unavailable',
-    summary,
-    severity,
-    timestamp: new Date().toISOString(),
-    round: meta.round,
-    phaseId: meta.phaseId ?? null,
-  };
-}
-
 // ── Internal Helpers ──
 
 function buildSummary(type: ObservationType, raw: string): string {

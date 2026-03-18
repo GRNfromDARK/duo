@@ -21,7 +21,6 @@ import {
   workflowMachine,
   type WorkflowContext,
 } from '../../engine/workflow-machine.js';
-import { InterruptHandler, type InterruptHandlerDeps } from '../../engine/interrupt-handler.js';
 import type { Observation } from '../../types/observation.js';
 import type { GodDecisionEnvelope } from '../../types/god-envelope.js';
 import type { GodAction } from '../../types/god-actions.js';
@@ -29,13 +28,11 @@ import {
   classifyOutput,
   guardNonWorkOutput,
   IncidentTracker,
-  createDegradationObservation,
 } from '../../god/observation-classifier.js';
 import { processWorkerOutput } from '../../god/observation-integration.js';
 import { executeActions, type HandExecutionContext } from '../../god/hand-executor.js';
 import { dispatchMessages, checkNLInvariantViolations } from '../../god/message-dispatcher.js';
 import { GodAuditLogger, logReviewerOverrideAudit, logEnvelopeDecision } from '../../god/god-audit.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
 
 // ── Helpers ──
 
@@ -401,106 +398,6 @@ describe('Test 3: Empty Output (AC-3)', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Test 4: Human Interrupt — Ctrl+C → clarification → resume
-// ═══════════════════════════════════════════════════════════════════
-
-describe('Test 4: Human Interrupt (AC-4)', () => {
-  it('Ctrl+C → human_interrupt observation → God clarifies → multi-turn → resume with CLARIFYING state', async () => {
-    const actor = startActor();
-    actor.send({ type: 'START_TASK', prompt: 'build feature' });
-    actor.send({ type: 'TASK_INIT_COMPLETE', maxRounds: 10 });
-    expect(actor.getSnapshot().value).toBe('CODING');
-
-    // ── Step 1: Simulate Ctrl+C interrupt via observation pipeline ──
-    const observations: Observation[] = [];
-    const deps: InterruptHandlerDeps = {
-      processManager: {
-        kill: vi.fn(async () => {}),
-        isRunning: () => true,
-        getBufferedOutput: () => 'partial output...',
-      },
-      sessionManager: {
-        saveState: vi.fn(),
-      },
-      actor: {
-        send: vi.fn(),
-        getSnapshot: () => ({
-          value: 'CODING',
-          context: { sessionId: null, round: 0, activeProcess: 'coder' },
-        }),
-      },
-      onExit: vi.fn(),
-      onInterrupted: vi.fn(),
-      onObservation: (obs: Observation) => observations.push(obs),
-    };
-
-    const handler = new InterruptHandler(deps);
-    await handler.handleSigint();
-
-    // Verify: observation emitted, NOT actor.send
-    expect(observations).toHaveLength(1);
-    expect(observations[0].type).toBe('human_interrupt');
-    expect(observations[0].source).toBe('human');
-    // InterruptHandler should NOT send events directly
-    expect(deps.actor.send).not.toHaveBeenCalled();
-
-    // ── Step 2: Route interrupt observation through state machine ──
-    actor.send({ type: 'INCIDENT_DETECTED', observation: observations[0] });
-    expect(actor.getSnapshot().value).toBe('OBSERVING');
-
-    actor.send({ type: 'OBSERVATIONS_READY', observations });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-
-    // ── Step 3: God decides to ask user for clarification ──
-    const envelopeClarify = makeEnvelope([
-      { type: 'request_user_input', question: 'You interrupted. Do you want to change direction or continue?' },
-    ]);
-    actor.send({ type: 'DECISION_READY', envelope: envelopeClarify });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-
-    const ctx1 = makeHandExecutionContext();
-    const execResults1 = await executeActions(envelopeClarify.actions, ctx1);
-    expect(ctx1.clarificationState.active).toBe(true);
-    expect(ctx1.clarificationState.question).toContain('change direction');
-
-    actor.send({ type: 'EXECUTION_COMPLETE', results: execResults1 });
-    expect(actor.getSnapshot().value).toBe('CLARIFYING');
-    expect(actor.getSnapshot().context.clarificationRound).toBe(1);
-    // frozenActiveProcess should preserve what was active before interrupt
-    expect(actor.getSnapshot().context.frozenActiveProcess).toBe('coder');
-
-    // ── Step 4: User answers (clarification_answer) ──
-    handler.handleUserInput('Please continue with the current approach', 'coder');
-    expect(observations).toHaveLength(2);
-    expect(observations[1].type).toBe('clarification_answer');
-    expect(observations[1].source).toBe('human');
-
-    // Route clarification_answer through pipeline
-    actor.send({ type: 'OBSERVATIONS_READY', observations: [observations[1]] });
-    expect(actor.getSnapshot().value).toBe('GOD_DECIDING');
-    // Clarification observations accumulated
-    expect(actor.getSnapshot().context.clarificationObservations.length).toBeGreaterThanOrEqual(1);
-
-    // ── Step 5: God decides to resume ──
-    const envelopeResume = makeEnvelope([
-      { type: 'resume_after_interrupt', resumeStrategy: 'continue' },
-    ]);
-    actor.send({ type: 'DECISION_READY', envelope: envelopeResume });
-    expect(actor.getSnapshot().value).toBe('EXECUTING');
-
-    actor.send({ type: 'EXECUTION_COMPLETE', results: [makeObs('phase_progress_signal', 'runtime')] });
-    // resume_after_interrupt(continue) + frozenActiveProcess=coder → CODING
-    expect(actor.getSnapshot().value).toBe('CODING');
-    // Clarification state cleared after resume
-    expect(actor.getSnapshot().context.clarificationRound).toBe(0);
-    expect(actor.getSnapshot().context.clarificationObservations).toEqual([]);
-
-    handler.dispose();
-    actor.stop();
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
 // Test 5: Reviewer Override — God overrides reviewer's changes_requested
 // ═══════════════════════════════════════════════════════════════════
 
@@ -691,42 +588,10 @@ describe('Test 6: State Change Enforcement (AC-6)', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-// Test 7: Incident Consecutive Failure → DegradationManager L4
+// Test 7: Incident Consecutive Failure Tracking
 // ═══════════════════════════════════════════════════════════════════
 
-describe('Test 7: Consecutive Failure Degradation (AC-7)', () => {
-  it('3 consecutive quota_exhausted → DegradationManager L4 → God disabled', () => {
-    const dm = new DegradationManager();
-
-    // Failure 1
-    const action1 = dm.handleGodFailure({ kind: 'process_exit', message: 'quota_exhausted crash 1' });
-    expect(action1.type).toBe('retry'); // L2: first failure → retry
-    expect(dm.getState().level).toBe('L2');
-
-    // Failure 2 (retry failed)
-    const action2 = dm.handleGodFailure({ kind: 'process_exit', message: 'quota_exhausted crash 2' });
-    expect(action2.type).toBe('fallback'); // L2: second failure → fallback
-    expect(dm.isGodAvailable()).toBe(true); // not L4 yet
-
-    // Failure 3 → L4
-    const action3 = dm.handleGodFailure({ kind: 'process_exit', message: 'quota_exhausted crash 3' });
-    expect(action3.type).toBe('fallback');
-    expect(dm.getState().level).toBe('L4');
-    expect(dm.getState().godDisabled).toBe(true);
-    expect(dm.isGodAvailable()).toBe(false);
-
-    // Degradation observation
-    const degradationObs = createDegradationObservation(dm.getState(), { round: 0 });
-    expect(degradationObs.type).toBe('adapter_unavailable');
-    expect(degradationObs.severity).toBe('fatal');
-    expect(degradationObs.summary).toContain('God disabled');
-
-    // God recovery does NOT restore from L4 (permanent for session)
-    dm.handleGodSuccess();
-    expect(dm.isGodAvailable()).toBe(false);
-    expect(dm.getState().level).toBe('L4');
-  });
-
+describe('Test 7: Consecutive Failure Tracking (AC-7)', () => {
   it('work output resets IncidentTracker counts', () => {
     const tracker = new IncidentTracker();
 

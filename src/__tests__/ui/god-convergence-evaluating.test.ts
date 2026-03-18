@@ -9,10 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { CLIAdapter, OutputChunk } from '../../types/adapter.js';
 import { evaluateConvergence, type ConvergenceLogEntry, type ConvergenceResult } from '../../god/god-convergence.js';
-import { DegradationManager } from '../../god/degradation-manager.js';
-import { ContextManager } from '../../session/context-manager.js';
 import { ConvergenceService } from '../../decision/convergence-service.js';
-import { ChoiceDetector } from '../../decision/choice-detector.js';
 import * as godAudit from '../../god/god-audit.js';
 
 // ── Mock God adapter ──
@@ -37,16 +34,6 @@ function createFailingGodAdapter(error: Error): CLIAdapter {
 }
 
 // ── Helpers ──
-
-function createDegradationManager(): DegradationManager {
-  return new DegradationManager({
-    fallbackServices: {
-      contextManager: new ContextManager({ contextWindowSize: 200000, promptsDir: '/tmp/prompts' }),
-      convergenceService: new ConvergenceService({ maxRounds: 20 }),
-      choiceDetector: new ChoiceDetector(),
-    },
-  });
-}
 
 function createBaseContext(overrides?: Partial<{
   round: number;
@@ -256,20 +243,17 @@ describe('AC-4: convergenceLog is correctly appended', () => {
 
 // ── AC-5: God failure degrades to v1 ConvergenceService ──
 
-describe('AC-5: God failure degrades to v1 ConvergenceService', () => {
-  it('DegradationManager tracks failure when evaluateConvergence throws', async () => {
+describe('AC-5: God failure falls back to v1 ConvergenceService', () => {
+  it('v1 ConvergenceService works as fallback when evaluateConvergence throws', async () => {
     const failingAdapter = createFailingGodAdapter(new Error('God timeout'));
-    const dm = createDegradationManager();
 
     try {
       await evaluateConvergence(failingAdapter, 'Review output', createBaseContext());
     } catch {
-      // Expected — in App.tsx this would trigger fallback
-      const action = dm.handleGodFailure({ kind: 'process_exit', message: 'God timeout' });
-      expect(action).toBeDefined();
+      // Expected — when God is down, the system pauses and falls back to v1
     }
 
-    // After failure, v1 ConvergenceService should still work as fallback
+    // v1 ConvergenceService should still work as fallback
     const v1Service = new ConvergenceService({ maxRounds: 20 });
     const v1Result = v1Service.evaluate('[APPROVED] All good', {
       currentRound: 3,
@@ -277,16 +261,6 @@ describe('AC-5: God failure degrades to v1 ConvergenceService', () => {
     });
     expect(v1Result.shouldTerminate).toBe(true);
     expect(v1Result.classification).toBe('approved');
-  });
-
-  it('after 3 consecutive failures, DegradationManager disables God (L4)', () => {
-    const dm = createDegradationManager();
-
-    dm.handleGodFailure({ kind: 'process_exit', message: 'fail 1' });
-    dm.handleGodFailure({ kind: 'process_exit', message: 'fail 2' });
-    dm.handleGodFailure({ kind: 'process_exit', message: 'fail 3' });
-
-    expect(dm.isGodAvailable()).toBe(false);
   });
 });
 
