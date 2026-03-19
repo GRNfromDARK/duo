@@ -3,6 +3,7 @@ import { Box, Text, ScrollBox, useInput } from '../../tui/primitives.js';
 import { InputArea } from './InputArea.js';
 import { StatusBar, type WorkflowStatus } from './StatusBar.js';
 import { TaskBanner } from './TaskBanner.js';
+import { MessageView } from './MessageView.js';
 import { ThinkingIndicator, shouldShowThinking } from './ThinkingIndicator.js';
 import { HelpOverlay } from './HelpOverlay.js';
 import { ContextOverlay } from './ContextOverlay.js';
@@ -19,7 +20,6 @@ import {
   computeSearchResults,
   type OverlayState,
 } from '../overlay-state.js';
-import { buildRenderedMessageLines, type RenderedMessageLine } from '../message-lines.js';
 
 export type WorkflowStateHint =
   | { phase: 'idle' }
@@ -140,12 +140,6 @@ export function MainLayout({
 
   const filteredMessages = filterMessages(messages, displayMode);
   const visibleMessages = filteredMessages.slice(clearedCount);
-  const renderedLines = buildRenderedMessageLines(
-    visibleMessages,
-    displayMode,
-    columns,
-  );
-
   const indicatorConfig = resolveIndicatorConfig(workflowState, isLLMRunning, visibleMessages);
   const isThinking = !workflowState && shouldShowThinking(isLLMRunning, visibleMessages);
   const searchResults = overlayState.activeOverlay === 'search'
@@ -297,8 +291,13 @@ export function MainLayout({
             scrollbarOptions={{ backgroundColor: 'black' }}
           >
             <Box flexDirection="column" width={columns}>
-              {renderedLines.map((line) => (
-                <RenderedLineView key={line.key} line={line} />
+              {visibleMessages.map((message) => (
+                <MessageView
+                  key={message.id}
+                  message={message}
+                  displayMode={displayMode}
+                  columns={columns}
+                />
               ))}
               {indicatorConfig && (
                 <ThinkingIndicator
@@ -336,23 +335,6 @@ export function MainLayout({
           )}
         </>
       )}
-    </Box>
-  );
-}
-
-function RenderedLineView({ line }: { line: RenderedMessageLine }): React.ReactElement {
-  return (
-    <Box>
-      {line.spans.map((span, index) => (
-        <Text
-          key={index}
-          color={span.color}
-          bold={span.bold}
-          dimColor={span.dimColor}
-        >
-          {span.text}
-        </Text>
-      ))}
     </Box>
   );
 }

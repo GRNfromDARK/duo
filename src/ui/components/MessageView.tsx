@@ -1,60 +1,46 @@
 import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
-import { ROLE_STYLES } from '../../types/ui.js';
 import type { Message } from '../../types/ui.js';
 import type { DisplayMode } from '../display-mode.js';
 import { StreamRenderer } from './StreamRenderer.js';
+import { buildMessageBlocks } from '../message-blocks.js';
 
 export interface MessageViewProps {
   message: Message;
   displayMode?: DisplayMode;
+  columns?: number;
 }
-
-function formatTime(timestamp: number, verbose: boolean): string {
-  const d = new Date(timestamp);
-  const h = String(d.getHours()).padStart(2, '0');
-  const m = String(d.getMinutes()).padStart(2, '0');
-  if (!verbose) return `${h}:${m}`;
-  const s = String(d.getSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
-}
-
-function formatTokenCount(count: number): string {
-  if (count < 1000) return String(count);
-  return `${(count / 1000).toFixed(1)}k`;
-}
-
-export function MessageView({ message, displayMode = 'minimal' }: MessageViewProps): React.ReactElement {
-  const style = ROLE_STYLES[message.role];
-  const label = message.roleLabel
-    ? `${style.displayName} · ${message.roleLabel}`
-    : style.displayName;
-  const isVerbose = displayMode === 'verbose';
-  const meta = message.metadata;
+export function MessageView({
+  message,
+  displayMode = 'minimal',
+  columns,
+}: MessageViewProps): React.ReactElement {
+  const block = buildMessageBlocks([message], displayMode)[0]!;
 
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column" marginBottom={1} width={columns}>
       <Box>
-        <Text color={style.color}>{style.border} </Text>
-        <Text color={style.color} bold>[{label}]</Text>
-        <Text color="gray"> {formatTime(message.timestamp, isVerbose)}</Text>
-        {isVerbose && meta?.tokenCount != null && (
-          <Text color="gray"> [{formatTokenCount(meta.tokenCount)} tokens]</Text>
+        <Text color={block.body.railColor} bold>{block.header.label}</Text>
+        <Text color="gray"> {block.header.time}</Text>
+        {block.header.tokenText && (
+          <Text color="gray"> [{block.header.tokenText}]</Text>
         )}
       </Box>
-      {isVerbose && meta?.cliCommand && (
+      {block.body.cliCommand && (
         <Box>
-          <Text color={style.color}>{style.border} </Text>
-          <Text color="gray" dimColor>$ {meta.cliCommand}</Text>
+          <Text color={block.body.railColor}>{block.body.railSymbol} </Text>
+          <Text color="gray" dimColor>$ {block.body.cliCommand}</Text>
         </Box>
       )}
       <Box>
-        <Text color={style.color}>{style.border} </Text>
-        <StreamRenderer
-          content={message.content}
-          isStreaming={message.isStreaming ?? false}
-          displayMode={displayMode}
-        />
+        <Text color={block.body.railColor}>{block.body.railSymbol} </Text>
+        <Box flexDirection="column">
+          <StreamRenderer
+            content={block.body.content}
+            isStreaming={message.isStreaming ?? false}
+            displayMode={displayMode}
+          />
+        </Box>
       </Box>
     </Box>
   );
