@@ -9,9 +9,7 @@
 
 import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
-
-const FOLD_THRESHOLD = 10;
-const PREVIEW_LINES = 5;
+import { buildCodeBlockLayout } from '../code-block-layout.js';
 
 export interface CodeBlockProps {
   content: string;
@@ -28,29 +26,23 @@ export function CodeBlock({
   expanded,
   onToggle,
 }: CodeBlockProps): React.ReactElement {
-  const lines = content.length === 0 ? [] : content.split('\n');
-  const lineCount = lines.length;
-  const shouldFold = lineCount > FOLD_THRESHOLD;
-
-  // Determine if currently expanded
-  const isExpanded = shouldFold ? (expanded ?? false) : true;
-  const displayLines = isExpanded ? lines : lines.slice(0, PREVIEW_LINES);
+  const layout = buildCodeBlockLayout({ content, language, expanded });
 
   return (
-    <Box flexDirection="column" marginY={0}>
-      {language && (
-        <Text dimColor> {language}</Text>
+    <Box flexDirection="column" marginBottom={1}>
+      {layout.languageLabel && (
+        <Text dimColor>╭─ {layout.languageLabel}</Text>
       )}
-      <Box flexDirection="column">
-        {displayLines.map((line, i) => (
-          <Text key={i} backgroundColor="gray" color="white"> {line} </Text>
+      <Box flexDirection="column" marginLeft={1}>
+        {layout.displayLines.map((line, i) => (
+          <Text key={i} color="cyan">{line}</Text>
         ))}
       </Box>
-      {shouldFold && !isExpanded && (
-        <Text color="cyan"> [▶ Expand · {lineCount} lines]</Text>
+      {layout.shouldFold && !layout.isExpanded && (
+        <Text color="cyan">╰─ [▶ Expand · {layout.lineCount} lines]</Text>
       )}
-      {shouldFold && isExpanded && (
-        <Text color="cyan"> [▼ Collapse · {lineCount} lines]</Text>
+      {layout.shouldFold && layout.isExpanded && (
+        <Text color="cyan">╰─ [▼ Collapse · {layout.lineCount} lines]</Text>
       )}
     </Box>
   );
