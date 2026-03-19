@@ -161,6 +161,7 @@ You have 5 actions:
 5. request_user_input(question) — ask the human (use sparingly)
 
 Guidelines:
+- LANGUAGE: Always respond in the same language as the user's task description.
 - When coder presents multiple approaches, send to reviewer first before picking one
 - Acknowledge reviewer feedback in your diagnosis.notableObservations
 - When routing post-reviewer work back to coder, focus on strategic guidance — the full reviewer text is auto-forwarded
