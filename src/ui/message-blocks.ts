@@ -3,7 +3,8 @@ import type { Message } from '../types/ui.js';
 import type { DisplayMode } from './display-mode.js';
 
 export interface MessageBlockHeader {
-  label: string;
+  name: string;
+  roleTag: string;
   time: string;
   tokenText?: string;
 }
@@ -11,7 +12,7 @@ export interface MessageBlockHeader {
 export interface MessageBlockBody {
   content: string;
   cliCommand?: string;
-  railSymbol: string;
+  railKind: 'border';
   railColor: string;
   tone: 'accent' | 'muted' | 'neutral';
 }
@@ -42,9 +43,7 @@ export function buildMessageBlocks(
 ): MessageBlock[] {
   return messages.map((message) => {
     const style = getRoleStyle(message.role);
-    const label = message.roleLabel
-      ? `${style.displayName} · ${message.roleLabel}`
-      : style.displayName;
+    const roleTag = message.roleLabel ?? style.displayName;
     const isVerbose = displayMode === 'verbose';
     const tone = message.role === 'system'
       ? 'muted'
@@ -55,7 +54,8 @@ export function buildMessageBlocks(
     return {
       id: message.id,
       header: {
-        label,
+        name: style.displayName,
+        roleTag,
         time: formatTime(message.timestamp, isVerbose),
         tokenText: isVerbose && message.metadata?.tokenCount != null
           ? formatTokenCount(message.metadata.tokenCount)
@@ -64,8 +64,8 @@ export function buildMessageBlocks(
       body: {
         content: message.content,
         cliCommand: isVerbose ? message.metadata?.cliCommand : undefined,
-        railSymbol: message.role === 'system' ? '·' : '▏',
-        railColor: tone === 'muted' ? 'yellow' : style.color,
+        railKind: 'border',
+        railColor: tone === 'muted' ? '#758195' : style.color,
         tone,
       },
     };

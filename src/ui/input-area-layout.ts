@@ -1,5 +1,7 @@
 const PLACEHOLDER_RUNNING = 'Type to interrupt, or wait for completion...';
 const PLACEHOLDER_IDLE = 'Type a message...';
+const HELPER_IDLE = 'Enter sends · Shift+Enter newline · ? help · / search · Paste supported';
+const HELPER_RUNNING = 'Waiting for completion · Shift+Enter newline · Paste supported';
 
 export interface BuildInputAreaLayoutOptions {
   value: string;
@@ -20,9 +22,14 @@ export interface InputAreaLayout {
   region: 'composer';
   height: number;
   showPlaceholder: boolean;
+  showHelperRow: boolean;
   promptIcon: string;
   promptColor: 'cyan' | 'yellow';
+  statusText: 'READY' | 'RUNNING';
+  statusColor: 'cyan' | 'yellow';
   placeholderText: string;
+  helperText: string;
+  cursorChar: string;
   lines: InputAreaRenderLine[];
 }
 
@@ -45,17 +52,26 @@ export function buildInputAreaLayout({
 }: BuildInputAreaLayoutOptions): InputAreaLayout {
   const promptIcon = isLLMRunning ? '◆' : '▸';
   const promptColor = isLLMRunning ? 'yellow' : 'cyan';
+  const statusText = isLLMRunning ? 'RUNNING' : 'READY';
+  const statusColor = promptColor;
   const placeholderText = isLLMRunning ? PLACEHOLDER_RUNNING : PLACEHOLDER_IDLE;
+  const helperText = isLLMRunning ? HELPER_RUNNING : HELPER_IDLE;
+  const cursorChar = '█';
   const showPlaceholder = value.length === 0;
 
   if (showPlaceholder) {
     return {
       region: 'composer',
-      height: 1,
+      height: 2,
       showPlaceholder: true,
+      showHelperRow: true,
       promptIcon,
       promptColor,
+      statusText,
+      statusColor,
       placeholderText,
+      helperText,
+      cursorChar,
       lines: [],
     };
   }
@@ -90,11 +106,16 @@ export function buildInputAreaLayout({
 
   return {
     region: 'composer',
-    height: Math.max(1, displayLines.length),
+    height: displayLines.length + (displayLines.length <= 1 ? 1 : 0),
     showPlaceholder: false,
+    showHelperRow: displayLines.length <= 1,
     promptIcon,
     promptColor,
+    statusText,
+    statusColor,
     placeholderText,
+    helperText,
+    cursorChar,
     lines,
   };
 }

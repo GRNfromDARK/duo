@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildStatusBarLayout } from '../../ui/status-bar-layout.js';
+import {
+  buildStatusBarLayout,
+  computeRenderedStatusBarWidth,
+} from '../../ui/status-bar-layout.js';
 
 describe('buildStatusBarLayout', () => {
   it('keeps status and token segments when width is narrow', () => {
     const layout = buildStatusBarLayout({
       projectPath: '/Users/rex/Documents/Program2026/duo',
+      statusIcon: '◇',
       statusLabel: 'Done',
       statusColor: 'green',
       activeAgent: 'Claude · Coder',
@@ -23,6 +27,7 @@ describe('buildStatusBarLayout', () => {
   it('truncates project path before dropping critical status segments', () => {
     const layout = buildStatusBarLayout({
       projectPath: '/Users/rex/Documents/Program2026/duo',
+      statusIcon: '◇',
       statusLabel: 'Done',
       statusColor: 'green',
       activeAgent: 'Claude · Coder',
@@ -42,6 +47,7 @@ describe('buildStatusBarLayout', () => {
   it('preserves left and right group ordering', () => {
     const layout = buildStatusBarLayout({
       projectPath: '/Users/rex/Documents/Program2026/duo',
+      statusIcon: '◆',
       statusLabel: 'Active',
       statusColor: 'yellow',
       activeAgent: 'Codex · Reviewer',
@@ -64,5 +70,20 @@ describe('buildStatusBarLayout', () => {
       'latency',
       'tokens',
     ]);
+  });
+
+  it('measures the fully rendered bar width including prefixes and status icon', () => {
+    const layout = buildStatusBarLayout({
+      projectPath: '/Users/rex/Documents/Program2026/duo',
+      statusIcon: '◆',
+      statusLabel: 'Active',
+      statusColor: 'green',
+      activeAgent: 'Claude Code:Coder',
+      tokenText: '0tok',
+      godLatencyText: '11661ms',
+      columns: 80,
+    });
+
+    expect(computeRenderedStatusBarWidth(layout)).toBeLessThanOrEqual(80);
   });
 });

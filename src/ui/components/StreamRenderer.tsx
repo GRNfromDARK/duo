@@ -35,9 +35,25 @@ function SegmentView({
     case 'paragraph':
       return (
         <Box flexDirection="column" marginBottom={entry.spacingAfter}>
-          {entry.text.split('\n').map((line, i) => (
-            <Text key={i}>{line}</Text>
-          ))}
+          <Text>
+            {entry.spans.map((span, i) => {
+              switch (span.kind) {
+                case 'inline_code':
+                  return (
+                    <Text key={i} backgroundColor="gray" color="white">
+                      {span.text}
+                    </Text>
+                  );
+                case 'bold':
+                  return <Text key={i} bold>{span.text}</Text>;
+                case 'italic':
+                  return <Text key={i} italic>{span.text}</Text>;
+                case 'text':
+                default:
+                  return <Text key={i}>{span.text}</Text>;
+              }
+            })}
+          </Text>
         </Box>
       );
 
@@ -56,19 +72,11 @@ function SegmentView({
       return (
         <ActivitySummary
           tone={entry.tone}
-          summary={entry.summary}
+          badgeText={entry.badgeText}
+          detailText={entry.detailText}
           spacingAfter={entry.spacingAfter}
         />
       );
-
-    case 'inline_code':
-      return <Text backgroundColor="gray" color="white">{entry.content}</Text>;
-
-    case 'bold':
-      return <Text bold>{entry.text}</Text>;
-
-    case 'italic':
-      return <Text italic>{entry.text}</Text>;
 
     case 'list_item': {
       const bullet = entry.marker === '-' || entry.marker === '*'
@@ -125,19 +133,26 @@ function TableView({
 
 function ActivitySummary({
   tone,
-  summary,
+  badgeText,
+  detailText,
   spacingAfter,
 }: {
   tone: 'accent' | 'muted' | 'warning' | 'neutral';
-  summary: string;
+  badgeText: string;
+  detailText?: string;
   spacingAfter: number;
 }): React.ReactElement {
-  const icon = tone === 'warning' ? '⚠' : tone === 'muted' ? '·' : '⏺';
   const color = toneToColor(tone);
+  const backgroundColor = tone === 'warning'
+    ? '#5a3b00'
+    : tone === 'muted'
+      ? '#314052'
+      : '#083344';
 
   return (
-    <Box marginBottom={spacingAfter}>
-      <Text color={color}>{icon} {summary}</Text>
+    <Box marginBottom={spacingAfter} flexDirection="row">
+      <Text color={color} backgroundColor={backgroundColor} bold>{` ${badgeText} `}</Text>
+      {detailText && <Text color={color}>{` ${detailText}`}</Text>}
     </Box>
   );
 }

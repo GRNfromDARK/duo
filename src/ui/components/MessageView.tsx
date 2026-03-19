@@ -17,31 +17,41 @@ export function MessageView({
   columns,
 }: MessageViewProps): React.ReactElement {
   const block = buildMessageBlocks([message], displayMode)[0]!;
-  const contentWidth = Math.max(1, (columns ?? 80) - 3);
+  const contentWidth = Math.max(1, (columns ?? 80) - 1);
+  const showRoleTag = block.header.roleTag !== block.header.name;
+  const headerColor = block.body.tone === 'muted' ? 'white' : block.body.railColor;
+  const tagColor = block.body.tone === 'muted' ? '#b7c0cf' : block.body.railColor;
 
   return (
     <Column marginBottom={1} width={columns}>
       <Row>
-        <Text color={block.body.railColor} bold>{block.header.label}</Text>
+        <Text color={headerColor} bold>{block.header.name}</Text>
+        {showRoleTag && (
+          <Text color={tagColor} bold>{`  [${block.header.roleTag}]`}</Text>
+        )}
         <Text color="gray">{` · ${block.header.time}`}</Text>
         {block.header.tokenText && (
           <Text color="gray">{` · ${block.header.tokenText}`}</Text>
         )}
       </Row>
-      {block.body.cliCommand && (
-        <Row marginTop={1}>
-          <Text color={block.body.railColor}>{block.body.railSymbol} </Text>
-          <Text color="gray" dimColor>$ {block.body.cliCommand}</Text>
-        </Row>
-      )}
-      <Row marginTop={block.body.cliCommand ? 0 : 1}>
-        <Text color={block.body.railColor}>{block.body.railSymbol} </Text>
-        <Box width={contentWidth} flexDirection="column">
-          <StreamRenderer
-            content={block.body.content}
-            isStreaming={message.isStreaming ?? false}
-            displayMode={displayMode}
-          />
+      <Row marginTop={1}>
+        <Box
+          width={contentWidth}
+          flexDirection="column"
+          border={block.body.railKind === 'border' ? ['left'] : false}
+          borderColor={block.body.railColor}
+          paddingLeft={1}
+        >
+          {block.body.cliCommand && (
+            <Text color="gray" dimColor>$ {block.body.cliCommand}</Text>
+          )}
+          <Box flexDirection="column" marginTop={block.body.cliCommand ? 1 : 0}>
+            <StreamRenderer
+              content={block.body.content}
+              isStreaming={message.isStreaming ?? false}
+              displayMode={displayMode}
+            />
+          </Box>
         </Box>
       </Row>
     </Column>

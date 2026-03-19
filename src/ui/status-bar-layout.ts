@@ -6,10 +6,12 @@ export interface StatusBarLayoutSegment {
   color?: string;
   dimColor?: boolean;
   priority: number;
+  icon?: string;
 }
 
 export interface BuildStatusBarLayoutOptions {
   projectPath: string;
+  statusIcon: string;
   statusLabel: string;
   statusColor: string;
   activeAgent: string | null;
@@ -25,26 +27,48 @@ export interface StatusBarLayout {
   right: StatusBarLayoutSegment[];
 }
 
-const GROUP_GAP = 2;
 const SEGMENT_GAP = 2;
 const MIN_PATH_WIDTH = 10;
+const MIN_SPACER_WIDTH = 1;
 
-function buildWidth(segments: StatusBarLayoutSegment[]): number {
+function renderSegmentText(segment: StatusBarLayoutSegment): string {
+  if (segment.kind === 'status' && segment.icon) {
+    return `${segment.icon} ${segment.text}`;
+  }
+
+  return segment.text;
+}
+
+function buildLeftWidth(segments: StatusBarLayoutSegment[]): number {
   if (segments.length === 0) return 0;
+
   return segments.reduce((total, segment, index) => {
-    const gap = index === 0 ? 0 : SEGMENT_GAP;
-    return total + gap + computeStringWidth(segment.text);
+    const prefixWidth = index === 0 ? 1 : SEGMENT_GAP;
+    return total + prefixWidth + computeStringWidth(renderSegmentText(segment));
   }, 0);
 }
 
-function totalWidth(left: StatusBarLayoutSegment[], right: StatusBarLayoutSegment[]): number {
-  const leftWidth = buildWidth(left);
-  const rightWidth = buildWidth(right);
+function buildRightWidth(segments: StatusBarLayoutSegment[]): number {
+  if (segments.length === 0) return 0;
 
-  if (leftWidth === 0) return rightWidth;
-  if (rightWidth === 0) return leftWidth;
+  return segments.reduce((total, segment, index) => {
+    const prefixWidth = index === 0 ? 0 : SEGMENT_GAP;
+    const suffixWidth = index === segments.length - 1 ? 1 : 0;
+    return total + prefixWidth + computeStringWidth(renderSegmentText(segment)) + suffixWidth;
+  }, 0);
+}
 
-  return leftWidth + GROUP_GAP + rightWidth;
+function totalContentWidth(left: StatusBarLayoutSegment[], right: StatusBarLayoutSegment[]): number {
+  return buildLeftWidth(left) + buildRightWidth(right);
+}
+
+function totalRenderedWidth(left: StatusBarLayoutSegment[], right: StatusBarLayoutSegment[]): number {
+  const contentWidth = totalContentWidth(left, right);
+  if (left.length === 0 || right.length === 0) {
+    return contentWidth;
+  }
+
+  return contentWidth + MIN_SPACER_WIDTH;
 }
 
 function truncateMiddle(text: string, maxWidth: number): string {
@@ -93,6 +117,7 @@ function withoutKind(
 
 export function buildStatusBarLayout({
   projectPath,
+  statusIcon,
   statusLabel,
   statusColor,
   activeAgent,
@@ -105,7 +130,7 @@ export function buildStatusBarLayout({
   let left: StatusBarLayoutSegment[] = [
     { kind: 'brand', text: 'Duo', priority: 1 },
     { kind: 'path', text: projectPath, priority: 5, dimColor: true },
-    { kind: 'status', text: statusLabel, priority: 1, color: statusColor },
+    { kind: 'status', text: statusLabel, priority: 1, color: statusColor, icon: statusIcon },
   ];
 
   if (activeAgent) {
@@ -127,7 +152,7 @@ export function buildStatusBarLayout({
   const removalOrder: Array<StatusBarLayoutSegment['kind']> = ['phase', 'task', 'latency', 'agent'];
 
   for (const kind of removalOrder) {
-    if (totalWidth(left, right) <= columns) break;
+    if (totalRenderedWidth(left, right) <= columns) break;
     if (findSegment(left, kind)) {
       left = withoutKind(left, kind);
       continue;
@@ -138,17 +163,21 @@ export function buildStatusBarLayout({
   }
 
   const pathSegment = findSegment(left, 'path');
-  if (pathSegment && totalWidth(left, right) > columns) {
-    const nonPathWidth = totalWidth(withoutKind(left, 'path'), right);
+  if (pathSegment && totalRenderedWidth(left, right) > columns) {
+    const nonPathLeft = withoutKind(left, 'path');
+    const nonPathWidth = totalContentWidth(nonPathLeft, right);
+    const pathIndex = left.findIndex((segment) => segment.kind === 'path');
+    const pathPrefixWidth = pathIndex <= 0 ? 1 : SEGMENT_GAP;
+    const spacerWidth = nonPathLeft.length > 0 && right.length > 0 ? MIN_SPACER_WIDTH : 0;
     const availablePathWidth = Math.max(
       MIN_PATH_WIDTH,
-      columns - nonPathWidth - GROUP_GAP - SEGMENT_GAP,
+      columns - nonPathWidth - spacerWidth - pathPrefixWidth,
     );
 
     pathSegment.text = truncateMiddle(pathSegment.text, availablePathWidth);
   }
 
-  if (totalWidth(left, right) > columns) {
+  if (totalRenderedWidth(left, right) > columns) {
     left = withoutKind(left, 'path');
   }
 
@@ -156,5 +185,9 @@ export function buildStatusBarLayout({
 }
 
 export function computeStatusBarWidth(layout: StatusBarLayout): number {
-  return totalWidth(layout.left, layout.right);
+  return totalContentWidth(layout.left, layout.right);
+}
+
+export function computeRenderedStatusBarWidth(layout: StatusBarLayout): number {
+  return totalRenderedWidth(layout.left, layout.right);
 }
