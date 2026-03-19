@@ -334,6 +334,18 @@ interface OverlayState {
 
 将 Markdown 文本解析为类型化的 segment 数组，供 `StreamRenderer` 和 `message-lines.ts` 渲染。支持流式场景下未闭合的代码块。
 
+#### 内联类型 `InlineSpan`
+
+用于 heading、blockquote、list_item 等复合段中嵌套的行内格式：
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `text` | `content` | 普通文本 |
+| `inline_code` | `content` | 行内代码 `` `code` `` |
+| `bold` | `content` | `**bold**` |
+| `italic` | `content` | `*italic*` |
+| `link` | `text`, `url` | `[text](url)` 链接 |
+
 #### 输出类型 `MarkdownSegment`
 
 | type | 字段 | 说明 |
@@ -344,22 +356,28 @@ interface OverlayState {
 | `inline_code` | `content` | 行内代码 `` `code` `` |
 | `bold` | `content` | `**bold**` |
 | `italic` | `content` | `*italic*` |
-| `list_item` | `content`, `marker` | 有序 (`1.`) / 无序 (`*`, `-`) 列表项 |
+| `link` | `text`, `url` | `[text](url)` 链接 |
+| `heading` | `level`, `spans: InlineSpan[]` | `# ~ ######` 标题（level 1-6），内容为 InlineSpan 数组 |
+| `blockquote` | `spans: InlineSpan[]` | `>` 引用块，连续 `>` 行合并，内容为 InlineSpan 数组 |
+| `list_item` | `spans: InlineSpan[]`, `marker` | 有序 (`1.`) / 无序 (`*`, `-`) 列表项，内容为 InlineSpan 数组 |
 | `table` | `headers`, `rows` | Markdown 表格（需 >=2 行且第二行为分隔符） |
 
 #### 核心函数
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `parseMarkdown(text)` | Markdown 字符串 | `MarkdownSegment[]` | 逐行状态机：先检测 activity block（`:::` 语法），再检测围栏代码块，再检测表格、列表项，最后收集连续纯文本并做 inline 解析；空字符串返回空数组 |
+| `parseInlineSpans(text)` | 纯文本字符串 | `InlineSpan[]` | 正则扫描 `**bold**`、`*italic*`、`` `code` ``、`[text](url)`，按匹配位置拆分为有序 span 数组 |
+| `parseMarkdown(text)` | Markdown 字符串 | `MarkdownSegment[]` | 逐行状态机：先检测 activity block（`:::` 语法），再检测围栏代码块，再检测 heading、blockquote、表格、列表项，最后收集连续纯文本并做 inline 解析；空字符串返回空数组 |
 
 #### 解析规则
 
 - **Activity block**: 匹配 `/^:::(activity|result|error)\s*(.*)$/`，`:::` 单独一行闭合；kind 决定语义（activity=操作、result=结果、error=错误）
 - **围栏代码块**: 匹配 `/^```(\w*)\s*$/`，闭合匹配 `/^```\s*$/`；未闭合的块视为仍在流式输出，content 为已收集的行
+- **标题**: 匹配 `/^(#{1,6})\s+(.+)$/`，`#` 数量决定 level（1-6），内容通过 `parseInlineSpans` 解析为 InlineSpan 数组
+- **引用块**: 匹配 `/^>\s?(.*)$/`，连续的 `>` 行合并后通过 `parseInlineSpans` 解析
 - **表格**: 要求第二行匹配 `/^\|[\s-:|]+\|$/`（分隔行），否则作为普通文本处理；`parseCells` 按 `|` 分割并 trim 每个单元格
-- **列表**: 无序 `/^([*-]) (.+)$/`，有序 `/^(\d+)\. (.+)$/`
-- **内联格式**: 正则 `/(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`)/g` 解析 bold、italic、inline_code；嵌套在连续文本行的 `parseInline` 中处理
+- **列表**: 无序 `/^([*-]) (.+)$/`，有序 `/^(\d+)\. (.+)$/`；内容通过 `parseInlineSpans` 解析为 InlineSpan 数组
+- **内联格式**: 正则 `/(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|\[([^\]]*?)\]\(([^)]*?)\))/g` 解析 bold、italic、inline_code、link；嵌套在连续文本行的 `parseInline` 中处理
 
 ---
 
@@ -1054,16 +1072,23 @@ interface StatusBarLayout {
 ```ts
 type StreamTone = 'accent' | 'muted' | 'warning' | 'neutral';
 
+type ParagraphSpanKind = 'text' | 'inline_code' | 'bold' | 'italic' | 'link';
+
+interface ParagraphSpan {
+  kind: ParagraphSpanKind;
+  text: string;
+  url?: string;  // 仅 link 类型
+}
+
 type StreamRenderEntry =
-  | { kind: 'paragraph'; text: string; spacingAfter: number }
-  | { kind: 'inline_code'; content: string; spacingAfter: number }
-  | { kind: 'bold'; text: string; spacingAfter: number }
-  | { kind: 'italic'; text: string; spacingAfter: number }
-  | { kind: 'list_item'; marker: string; text: string; spacingAfter: number }
+  | { kind: 'paragraph'; spans: ParagraphSpan[]; spacingAfter: number }
+  | { kind: 'list_item'; marker: string; spans: ParagraphSpan[]; spacingAfter: number }
+  | { kind: 'heading'; level: number; spans: ParagraphSpan[]; spacingAfter: number }
+  | { kind: 'blockquote'; spans: ParagraphSpan[]; spacingAfter: number }
   | { kind: 'table'; headers: string[]; rows: string[][]; spacingAfter: number }
   | { kind: 'code_block'; content: string; language?: string; spacingAfter: number }
   | { kind: 'activity_block'; title: string; content: string; tone: StreamTone; spacingAfter: number }
-  | { kind: 'activity_summary'; summary: string; tone: StreamTone; spacingAfter: number };
+  | { kind: 'activity_summary'; summary: string; badgeText: string; detailText?: string; tone: StreamTone; spacingAfter: number };
 
 interface SystemMessageAppearance {
   tone: StreamTone;
@@ -1076,7 +1101,7 @@ interface SystemMessageAppearance {
 
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
-| `buildStreamRenderModel(segments, displayMode)` | `MarkdownSegment[]` + `DisplayMode` | `StreamRenderEntry[]` | 逐 segment 转换：text 按双换行拆分为段落；inline_code / bold / italic / list_item / table / code_block 直接映射；activity_block 在 minimal 模式下收集连续 activity 块并调用 `summarizeActivityRun` 折叠为单条摘要，在 verbose 模式下保留完整内容 |
+| `buildStreamRenderModel(segments, displayMode)` | `MarkdownSegment[]` + `DisplayMode` | `StreamRenderEntry[]` | 逐 segment 转换：text 按双换行拆分为段落（`ParagraphSpan[]`）；inline_code / bold / italic / link 追加到当前段落 spans；heading / blockquote / list_item 通过 `inlineSpansToParagraphSpans` 将 `InlineSpan[]` 转换为 `ParagraphSpan[]`；table / code_block 直接映射；activity_block 在 minimal 模式下收集连续 activity 块并调用 `summarizeActivityRun` 折叠为单条摘要（含 badgeText/detailText），在 verbose 模式下保留完整内容 |
 | `getSystemMessageAppearance(type)` | `'routing' \| 'interrupt' \| 'waiting'` | `SystemMessageAppearance` | interrupt -> `{ tone: 'warning', color: 'yellow', prefix: '⚠' }`；routing -> `{ tone: 'muted', color: 'gray', prefix: '·' }`；waiting -> `{ tone: 'muted', color: 'gray', prefix: '›' }` |
 | `toneToColor(tone)` | `StreamTone` | `string` | warning -> `'red'`，muted -> `'gray'`，accent -> `'cyan'`，neutral -> `'white'` |
 
@@ -1084,14 +1109,19 @@ interface SystemMessageAppearance {
 
 | 函数 | 说明 |
 |------|------|
+| `inlineSpansToParagraphSpans(spans)` | 将 `InlineSpan[]` 转换为 `ParagraphSpan[]`，用于 heading / blockquote / list_item 的渲染 |
 | `toneForActivity(kind)` | activity -> `'accent'`，result -> `'muted'`，error -> `'warning'` |
 | `splitParagraphs(text)` | 按双换行分割并 trim，过滤空段落 |
-| `summarizeActivityRun(run)` | 将连续的 activity block 数组折叠为 `activity_summary`：统计 action / result / error 数量，提取最新 activity 的标题和首行内容作为摘要；tone 按 error > activity > result 优先级决定 |
+| `appendParagraphSpan(spans, nextSpan)` | 追加 `ParagraphSpan`，相邻 text 类型自动合并 |
+| `flushParagraph(entries, spans, spacingAfter)` | 将当前累积的 `ParagraphSpan[]` 刷新为一个 `paragraph` entry |
+| `appendTextContent(entries, spans, text)` | 按双换行拆分文本为段落，逐段追加 |
+| `extractToolUpdateSummary(text)` | 从文本中提取 `⏺ N tool updates` 格式的工具更新摘要 |
+| `summarizeActivityRun(run)` | 将连续的 activity block 数组折叠为 `activity_summary`：统计 action / result / error 数量，提取最新 activity 的标题和首行内容作为 badgeText / detailText；tone 按 error > activity > result 优先级决定 |
 
 #### 依赖
 
 - `display-mode.ts` -- `DisplayMode` 类型
-- `markdown-parser.ts` -- `MarkdownSegment` 类型
+- `markdown-parser.ts` -- `InlineSpan`、`MarkdownSegment` 类型
 
 ---
 

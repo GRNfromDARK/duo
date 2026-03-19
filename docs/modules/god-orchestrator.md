@@ -360,6 +360,7 @@ interface GodDecisionContext {
 - 5 种 action 及其语义
 - 语言规则：始终使用与用户任务描述相同的语言回复
 - 探索→实现过渡规则：从 explore/discuss 切换到 code/debug 时，先将发现送 reviewer 验证
+- 单路由规则：每个 envelope 最多包含一个 routing action，禁止组合多个路由动作（系统只执行第一个）
 - 分支规则：code/debug 工作必须先建 feature branch，accept_task 前确认已合并到 main
 - 指导原则：多方案先送 reviewer、承认 reviewer 反馈、反思后才 accept、循环时换策略、不轻易求助用户
 - 输出格式：单个 JSON code block
