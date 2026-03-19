@@ -1,27 +1,22 @@
 /**
- * Interactive directory picker TUI component.
- * Source: FR-019 (AC-065, AC-066, AC-067)
- *
- * Features:
- * - Path input with Tab autocomplete (AC-065)
- * - MRU list persisted to ~/.duo/recent.json (AC-066)
- * - Auto-discover git repos in ~/Projects, ~/Developer, ~/code
- * - Warning for non-git directories (AC-067)
+ * Interactive directory picker for the setup flow.
  */
 
-import React, { useState, useMemo } from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import React, { useMemo, useState } from 'react';
+import { Text, useInput } from '../../tui/primitives.js';
 import {
-  completePath,
-  isGitRepo,
-  discoverGitRepos,
-  loadMRU,
-  saveMRU,
   addToMRU,
-  processPickerInput,
+  completePath,
   DEFAULT_SCAN_DIRS,
+  discoverGitRepos,
+  isGitRepo,
+  loadMRU,
+  processPickerInput,
+  saveMRU,
   type PickerState,
 } from '../directory-picker-state.js';
+import { Column, FooterHint, Panel, PromptRow, Row, SectionTitle, buildSelectionRowModel } from '../tui-layout.js';
+import { SETUP_PANEL_WIDTH } from '../setup-wizard-layout.js';
 import * as path from 'node:path';
 
 const home = process.env.HOME ?? '/home/user';
@@ -40,7 +35,6 @@ export function DirectoryPicker({
   mruFile = MRU_FILE,
   scanDirs = DEFAULT_SCAN_DIRS,
 }: DirectoryPickerProps): React.ReactElement {
-  // Load MRU and discover repos once on mount
   const mru = useMemo(() => loadMRU(mruFile), [mruFile]);
   const discovered = useMemo(() => discoverGitRepos(scanDirs), [scanDirs]);
 
@@ -49,12 +43,11 @@ export function DirectoryPicker({
   const [completions, setCompletions] = useState<string[]>([]);
   const [warning, setWarning] = useState<string | null>(null);
 
-  // Combined items list: MRU first, then discovered (deduplicated)
   const items = useMemo(() => {
     const combined = [...mru];
-    for (const d of discovered) {
-      if (!combined.includes(d)) {
-        combined.push(d);
+    for (const dir of discovered) {
+      if (!combined.includes(dir)) {
+        combined.push(dir);
       }
     }
     return combined;
@@ -79,7 +72,6 @@ export function DirectoryPicker({
         setCompletions([]);
         setWarning(null);
         break;
-
       case 'tab_complete': {
         const matches = completePath(inputValue);
         if (matches.length === 1) {
@@ -90,96 +82,90 @@ export function DirectoryPicker({
         }
         break;
       }
-
       case 'submit': {
         const dir = action.value;
-        // AC-067: warn if not a git repo
         if (!isGitRepo(dir)) {
-          setWarning('Warning: Selected directory is not a git repository (Codex requires git)');
+          setWarning('Warning: selected directory is not a git repository.');
         }
-        // Save to MRU
         const updated = addToMRU(mru, dir);
         saveMRU(mruFile, updated);
         onSelect(dir);
         break;
       }
-
       case 'select':
         setSelectedIndex(action.index);
         break;
-
       case 'cancel':
         onCancel();
         break;
-
       case 'noop':
         break;
     }
   });
 
   return (
-    <Box flexDirection="column" borderStyle="single" paddingX={1}>
-      <Text bold color="cyan">Select Project Directory</Text>
-      <Box marginTop={1}>
-        <Text>Path: </Text>
-        <Text color="white">{inputValue}</Text>
-        <Text dimColor>█</Text>
-      </Box>
-      <Text dimColor>  (Tab to autocomplete, ↑↓ to browse, Esc to cancel)</Text>
+    <Panel tone="section" width={SETUP_PANEL_WIDTH} alignSelf="flex-start" paddingX={2}>
+      <SectionTitle title="Select Project Directory" tone="hero" />
+      <FooterHint text="Tab autocomplete · Arrow keys browse · Esc cancel" />
 
-      {/* Tab completion results */}
+      <Row marginTop={1}>
+        <Text dimColor>Path</Text>
+      </Row>
+      <Row>
+        <PromptRow value={inputValue} placeholder="Enter or paste a directory" leadingSpace={false} />
+      </Row>
+
       {completions.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
+        <Column marginTop={1}>
           <Text dimColor>Completions:</Text>
-          {completions.map((c, i) => (
-            <Text key={i} color="cyan">  {c}</Text>
+          {completions.map((completion, i) => (
+            <Text key={i} color="cyan">{`  ${completion}`}</Text>
           ))}
-        </Box>
+        </Column>
       )}
 
-      {/* Warning */}
       {warning && (
-        <Box marginTop={1}>
+        <Row marginTop={1}>
           <Text color="yellow">{warning}</Text>
-        </Box>
+        </Row>
       )}
 
-      {/* MRU section */}
-      <Box flexDirection="column" marginTop={1}>
+      <Column marginTop={1}>
         <Text bold>Recent:</Text>
         {mru.length === 0 ? (
           <Text dimColor>  (no recent directories)</Text>
         ) : (
           mru.map((dir, i) => {
-            const isSelected = selectedIndex === i;
             const label = dir.replace(home, '~');
+            const model = buildSelectionRowModel({ label, selected: selectedIndex === i });
             return (
-              <Text key={dir} color={isSelected ? 'green' : undefined}>
-                {isSelected ? '> ' : '  '}{label}
-              </Text>
+              <Row key={dir}>
+                <Text color={model.chevronColor} bold={model.emphasis}>{` ${model.chevron} `}</Text>
+                <Text color={selectedIndex === i ? 'green' : model.textColor} bold={model.emphasis}>{label}</Text>
+              </Row>
             );
           })
         )}
-      </Box>
+      </Column>
 
-      {/* Discovered repos section */}
-      <Box flexDirection="column" marginTop={1}>
+      <Column marginTop={1}>
         <Text bold>Discovered (git repos):</Text>
         {discovered.length === 0 ? (
           <Text dimColor>  (none found)</Text>
         ) : (
-          discovered.filter((d) => !mru.includes(d)).map((dir, i) => {
+          discovered.filter((dir) => !mru.includes(dir)).map((dir, i) => {
             const globalIndex = mru.length + i;
-            const isSelected = selectedIndex === globalIndex;
             const label = dir.replace(home, '~');
+            const model = buildSelectionRowModel({ label, selected: selectedIndex === globalIndex });
             return (
-              <Text key={dir} color={isSelected ? 'green' : undefined}>
-                {isSelected ? '> ' : '  '}{label}
-              </Text>
+              <Row key={dir}>
+                <Text color={model.chevronColor} bold={model.emphasis}>{` ${model.chevron} `}</Text>
+                <Text color={selectedIndex === globalIndex ? 'green' : model.textColor} bold={model.emphasis}>{label}</Text>
+              </Row>
             );
           })
         )}
-      </Box>
-    </Box>
+      </Column>
+    </Panel>
   );
 }
