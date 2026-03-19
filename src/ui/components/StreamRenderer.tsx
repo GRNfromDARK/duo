@@ -14,7 +14,7 @@ import { Box, Text } from '../../tui/primitives.js';
 import { parseMarkdown } from '../markdown-parser.js';
 import { CodeBlock } from './CodeBlock.js';
 import type { DisplayMode } from '../display-mode.js';
-import { buildStreamRenderModel, toneToColor, type StreamRenderEntry } from '../stream-renderer-layout.js';
+import { buildStreamRenderModel, toneToColor, type ParagraphSpan, type StreamRenderEntry } from '../stream-renderer-layout.js';
 
 export interface StreamRendererProps {
   content: string;
@@ -23,6 +23,36 @@ export interface StreamRendererProps {
 }
 
 const SPINNER_CHARS = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
+
+function renderSpan(span: ParagraphSpan, i: number): React.ReactElement {
+  switch (span.kind) {
+    case 'inline_code':
+      return (
+        <Text key={i} backgroundColor="gray" color="white">
+          {span.text}
+        </Text>
+      );
+    case 'bold':
+      return <Text key={i} bold>{span.text}</Text>;
+    case 'italic':
+      return <Text key={i} italic>{span.text}</Text>;
+    case 'link':
+      return span.url
+        ? <Text key={i}><Text underline>{span.text}</Text><Text color="gray">{` (${span.url})`}</Text></Text>
+        : <Text key={i} underline>{span.text}</Text>;
+    case 'text':
+    default:
+      return <Text key={i}>{span.text}</Text>;
+  }
+}
+
+function InlineSpans({ spans }: { spans: ParagraphSpan[] }): React.ReactElement {
+  return (
+    <Text>
+      {spans.map((span, i) => renderSpan(span, i))}
+    </Text>
+  );
+}
 
 function SegmentView({
   entry,
@@ -35,27 +65,43 @@ function SegmentView({
     case 'paragraph':
       return (
         <Box flexDirection="column" marginBottom={entry.spacingAfter}>
-          <Text>
-            {entry.spans.map((span, i) => {
-              switch (span.kind) {
-                case 'inline_code':
-                  return (
-                    <Text key={i} backgroundColor="gray" color="white">
-                      {span.text}
-                    </Text>
-                  );
-                case 'bold':
-                  return <Text key={i} bold>{span.text}</Text>;
-                case 'italic':
-                  return <Text key={i} italic>{span.text}</Text>;
-                case 'text':
-                default:
-                  return <Text key={i}>{span.text}</Text>;
-              }
-            })}
+          <InlineSpans spans={entry.spans} />
+        </Box>
+      );
+
+    case 'heading': {
+      const headingColor = entry.level <= 2 ? 'cyan' : 'white';
+      return (
+        <Box flexDirection="column" marginBottom={entry.spacingAfter}>
+          <Text bold color={headingColor}>
+            <InlineSpans spans={entry.spans} />
           </Text>
         </Box>
       );
+    }
+
+    case 'blockquote': {
+      // Split spans into lines at newline boundaries, preserving inline formatting
+      const spanLines: ParagraphSpan[][] = [[]];
+      for (const span of entry.spans) {
+        const text = span.kind === 'link' ? span.text : span.text;
+        const parts = text.split('\n');
+        // First part appends to current line
+        spanLines[spanLines.length - 1]!.push({ ...span, text: parts[0] });
+        // Each subsequent part starts a new line
+        for (let k = 1; k < parts.length; k++) {
+          spanLines.push([{ ...span, text: parts[k] }]);
+        }
+      }
+
+      return (
+        <Box flexDirection="column" marginBottom={entry.spacingAfter}>
+          {spanLines.map((lineSpans, idx) => (
+            <Text key={idx} color="gray" italic>│ {lineSpans.map((span, si) => renderSpan(span, si))}</Text>
+          ))}
+        </Box>
+      );
+    }
 
     case 'activity_block':
       return (
@@ -83,7 +129,7 @@ function SegmentView({
         ? '  \u2022'
         : `  ${entry.marker}`;
       return (
-        <Text>{bullet} {entry.text}</Text>
+        <Text>{bullet} <InlineSpans spans={entry.spans} /></Text>
       );
     }
 

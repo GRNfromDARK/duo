@@ -4,8 +4,16 @@
  *
  * Parses markdown text into typed segments for rendering.
  * Supports: code blocks (fenced, unclosed for streaming), inline code,
- * bold, italic, lists (ordered/unordered), and tables.
+ * bold, italic, links, headings, blockquotes, lists (ordered/unordered),
+ * and tables.
  */
+
+export type InlineSpan =
+  | { type: 'text'; content: string }
+  | { type: 'inline_code'; content: string }
+  | { type: 'bold'; content: string }
+  | { type: 'italic'; content: string }
+  | { type: 'link'; text: string; url: string };
 
 export type MarkdownSegment =
   | { type: 'text'; content: string }
@@ -14,7 +22,10 @@ export type MarkdownSegment =
   | { type: 'inline_code'; content: string }
   | { type: 'bold'; content: string }
   | { type: 'italic'; content: string }
-  | { type: 'list_item'; content: string; marker: string }
+  | { type: 'link'; text: string; url: string }
+  | { type: 'list_item'; spans: InlineSpan[]; marker: string }
+  | { type: 'heading'; level: number; spans: InlineSpan[] }
+  | { type: 'blockquote'; spans: InlineSpan[] }
   | { type: 'table'; headers: string[]; rows: string[][] };
 
 const FENCE_OPEN = /^```(\w*)\s*$/;
@@ -25,6 +36,48 @@ const TABLE_ROW = /^\|(.+)\|$/;
 const TABLE_SEP = /^\|[\s-:|]+\|$/;
 const ACTIVITY_OPEN = /^:::(activity|result|error)\s*(.*)$/;
 const ACTIVITY_CLOSE = /^:::\s*$/;
+const HEADING = /^(#{1,6})\s+(.+)$/;
+const BLOCKQUOTE = /^>\s?(.*)$/;
+
+/**
+ * Parse inline markdown into an array of InlineSpan.
+ * Supports: **bold**, *italic*, `code`, [text](url)
+ */
+export function parseInlineSpans(text: string): InlineSpan[] {
+  if (text.length === 0) return [];
+
+  const spans: InlineSpan[] = [];
+  // Match: **bold**, *italic*, `code`, [text](url)
+  const pattern = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`|\[([^\]]*?)\]\(([^)]*?)\))/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      spans.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+    }
+
+    if (match[2] !== undefined) {
+      spans.push({ type: 'bold', content: match[2] });
+    } else if (match[3] !== undefined) {
+      spans.push({ type: 'italic', content: match[3] });
+    } else if (match[4] !== undefined) {
+      spans.push({ type: 'inline_code', content: match[4] });
+    } else if (match[5] !== undefined) {
+      spans.push({ type: 'link', text: match[5], url: match[6] ?? '' });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    spans.push({ type: 'text', content: text.slice(lastIndex) });
+  } else if (lastIndex === 0 && text.length > 0) {
+    spans.push({ type: 'text', content: text });
+  }
+
+  return spans;
+}
 
 /**
  * Parse markdown text into an array of typed segments.
@@ -91,6 +144,38 @@ export function parseMarkdown(text: string): MarkdownSegment[] {
       continue;
     }
 
+    // Check for heading
+    const headingMatch = line.match(HEADING);
+    if (headingMatch) {
+      segments.push({
+        type: 'heading',
+        level: headingMatch[1].length,
+        spans: parseInlineSpans(headingMatch[2]),
+      });
+      i++;
+      continue;
+    }
+
+    // Check for blockquote (collect consecutive > lines)
+    const bqMatch = line.match(BLOCKQUOTE);
+    if (bqMatch) {
+      const bqLines: string[] = [];
+      while (i < lines.length) {
+        const bqLineMatch = lines[i].match(BLOCKQUOTE);
+        if (bqLineMatch) {
+          bqLines.push(bqLineMatch[1]);
+          i++;
+        } else {
+          break;
+        }
+      }
+      segments.push({
+        type: 'blockquote',
+        spans: parseInlineSpans(bqLines.join('\n')),
+      });
+      continue;
+    }
+
     // Check for table (starts with |)
     if (TABLE_ROW.test(line)) {
       const tableLines: string[] = [];
@@ -113,7 +198,7 @@ export function parseMarkdown(text: string): MarkdownSegment[] {
     // Check for unordered list item
     const ulMatch = line.match(UNORDERED_LIST);
     if (ulMatch) {
-      segments.push({ type: 'list_item', content: ulMatch[2], marker: ulMatch[1] });
+      segments.push({ type: 'list_item', spans: parseInlineSpans(ulMatch[2]), marker: ulMatch[1] });
       i++;
       continue;
     }
@@ -121,7 +206,7 @@ export function parseMarkdown(text: string): MarkdownSegment[] {
     // Check for ordered list item
     const olMatch = line.match(ORDERED_LIST);
     if (olMatch) {
-      segments.push({ type: 'list_item', content: olMatch[2], marker: `${olMatch[1]}.` });
+      segments.push({ type: 'list_item', spans: parseInlineSpans(olMatch[2]), marker: `${olMatch[1]}.` });
       i++;
       continue;
     }
@@ -133,6 +218,8 @@ export function parseMarkdown(text: string): MarkdownSegment[] {
       if (
         ACTIVITY_OPEN.test(l) ||
         l.match(FENCE_OPEN) ||
+        l.match(HEADING) ||
+        l.match(BLOCKQUOTE) ||
         TABLE_ROW.test(l) ||
         UNORDERED_LIST.test(l) ||
         ORDERED_LIST.test(l)
@@ -167,35 +254,28 @@ function addText(segments: MarkdownSegment[], content: string): void {
 }
 
 /**
- * Parse inline markdown: **bold**, *italic*, `code`
+ * Parse inline markdown: **bold**, *italic*, `code`, [text](url)
+ * Appends flat MarkdownSegment entries (legacy top-level inline segments).
  */
 function parseInline(text: string, segments: MarkdownSegment[]): void {
-  // Match inline patterns: **bold**, *italic*, `code`
-  const pattern = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+?)`)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    // Add preceding text
-    if (match.index > lastIndex) {
-      segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+  const spans = parseInlineSpans(text);
+  for (const span of spans) {
+    switch (span.type) {
+      case 'text':
+        segments.push({ type: 'text', content: span.content });
+        break;
+      case 'bold':
+        segments.push({ type: 'bold', content: span.content });
+        break;
+      case 'italic':
+        segments.push({ type: 'italic', content: span.content });
+        break;
+      case 'inline_code':
+        segments.push({ type: 'inline_code', content: span.content });
+        break;
+      case 'link':
+        segments.push({ type: 'link', text: span.text, url: span.url });
+        break;
     }
-
-    if (match[2] !== undefined) {
-      segments.push({ type: 'bold', content: match[2] });
-    } else if (match[3] !== undefined) {
-      segments.push({ type: 'italic', content: match[3] });
-    } else if (match[4] !== undefined) {
-      segments.push({ type: 'inline_code', content: match[4] });
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  // Add trailing text
-  if (lastIndex < text.length) {
-    segments.push({ type: 'text', content: text.slice(lastIndex) });
-  } else if (lastIndex === 0 && text.length > 0) {
-    segments.push({ type: 'text', content: text });
   }
 }

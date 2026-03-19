@@ -86,6 +86,178 @@ describe('buildStreamRenderModel', () => {
       spacingAfter: 0,
     });
   });
+
+  describe('headings', () => {
+    it('converts heading segment to heading render entry', () => {
+      const segments: MarkdownSegment[] = [
+        { type: 'heading', level: 2, spans: [{ type: 'text', content: 'Title' }] },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model).toEqual([
+        {
+          kind: 'heading',
+          level: 2,
+          spans: [{ kind: 'text', text: 'Title' }],
+          spacingAfter: 1,
+        },
+      ]);
+    });
+
+    it('preserves inline formatting in heading spans', () => {
+      const segments: MarkdownSegment[] = [
+        {
+          type: 'heading',
+          level: 1,
+          spans: [
+            { type: 'bold', content: 'Bold' },
+            { type: 'text', content: ' and ' },
+            { type: 'inline_code', content: 'code' },
+          ],
+        },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model[0]).toMatchObject({
+        kind: 'heading',
+        level: 1,
+        spans: [
+          { kind: 'bold', text: 'Bold' },
+          { kind: 'text', text: ' and ' },
+          { kind: 'inline_code', text: 'code' },
+        ],
+      });
+    });
+
+    it('flushes preceding paragraph before heading', () => {
+      const segments: MarkdownSegment[] = [
+        { type: 'text', content: 'Intro text' },
+        { type: 'heading', level: 2, spans: [{ type: 'text', content: 'Title' }] },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model).toHaveLength(2);
+      expect(model[0]).toMatchObject({ kind: 'paragraph' });
+      expect(model[1]).toMatchObject({ kind: 'heading' });
+    });
+  });
+
+  describe('blockquotes', () => {
+    it('converts blockquote segment to blockquote render entry', () => {
+      const segments: MarkdownSegment[] = [
+        { type: 'blockquote', spans: [{ type: 'text', content: 'Quoted text' }] },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model).toEqual([
+        {
+          kind: 'blockquote',
+          spans: [{ kind: 'text', text: 'Quoted text' }],
+          spacingAfter: 1,
+        },
+      ]);
+    });
+
+    it('preserves inline formatting in blockquote', () => {
+      const segments: MarkdownSegment[] = [
+        {
+          type: 'blockquote',
+          spans: [
+            { type: 'text', content: 'This is ' },
+            { type: 'bold', content: 'important' },
+          ],
+        },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model[0]).toMatchObject({
+        kind: 'blockquote',
+        spans: [
+          { kind: 'text', text: 'This is ' },
+          { kind: 'bold', text: 'important' },
+        ],
+      });
+    });
+  });
+
+  describe('links', () => {
+    it('includes link span in paragraph', () => {
+      const segments: MarkdownSegment[] = [
+        { type: 'text', content: 'See ' },
+        { type: 'link', text: 'docs', url: 'https://example.com' },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model).toEqual([
+        {
+          kind: 'paragraph',
+          spans: [
+            { kind: 'text', text: 'See ' },
+            { kind: 'link', text: 'docs', url: 'https://example.com' },
+          ],
+          spacingAfter: 0,
+        },
+      ]);
+    });
+  });
+
+  describe('list items with inline spans', () => {
+    it('converts list item spans to paragraph spans', () => {
+      const segments: MarkdownSegment[] = [
+        {
+          type: 'list_item',
+          marker: '-',
+          spans: [
+            { type: 'bold', content: 'Bold' },
+            { type: 'text', content: ' item' },
+          ],
+        },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model).toEqual([
+        {
+          kind: 'list_item',
+          marker: '-',
+          spans: [
+            { kind: 'bold', text: 'Bold' },
+            { kind: 'text', text: ' item' },
+          ],
+          spacingAfter: 0,
+        },
+      ]);
+    });
+
+    it('handles list item with link', () => {
+      const segments: MarkdownSegment[] = [
+        {
+          type: 'list_item',
+          marker: '-',
+          spans: [
+            { type: 'text', content: 'See ' },
+            { type: 'link', text: 'docs', url: 'https://example.com' },
+          ],
+        },
+      ];
+
+      const model = buildStreamRenderModel(segments, 'minimal');
+
+      expect(model[0]).toMatchObject({
+        kind: 'list_item',
+        spans: [
+          { kind: 'text', text: 'See ' },
+          { kind: 'link', text: 'docs', url: 'https://example.com' },
+        ],
+      });
+    });
+  });
 });
 
 describe('getSystemMessageAppearance', () => {

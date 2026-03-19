@@ -1,17 +1,20 @@
 import type { DisplayMode } from './display-mode.js';
-import type { MarkdownSegment } from './markdown-parser.js';
+import type { InlineSpan, MarkdownSegment } from './markdown-parser.js';
 
 export type StreamTone = 'accent' | 'muted' | 'warning' | 'neutral';
-export type ParagraphSpanKind = 'text' | 'inline_code' | 'bold' | 'italic';
+export type ParagraphSpanKind = 'text' | 'inline_code' | 'bold' | 'italic' | 'link';
 
 export interface ParagraphSpan {
   kind: ParagraphSpanKind;
   text: string;
+  url?: string;
 }
 
 export type StreamRenderEntry =
   | { kind: 'paragraph'; spans: ParagraphSpan[]; spacingAfter: number }
-  | { kind: 'list_item'; marker: string; text: string; spacingAfter: number }
+  | { kind: 'list_item'; marker: string; spans: ParagraphSpan[]; spacingAfter: number }
+  | { kind: 'heading'; level: number; spans: ParagraphSpan[]; spacingAfter: number }
+  | { kind: 'blockquote'; spans: ParagraphSpan[]; spacingAfter: number }
   | { kind: 'table'; headers: string[]; rows: string[][]; spacingAfter: number }
   | { kind: 'code_block'; content: string; language?: string; spacingAfter: number }
   | { kind: 'activity_block'; title: string; content: string; tone: StreamTone; spacingAfter: number }
@@ -28,6 +31,30 @@ export interface SystemMessageAppearance {
   tone: StreamTone;
   color: string;
   prefix: string;
+}
+
+function inlineSpansToParagraphSpans(spans: InlineSpan[]): ParagraphSpan[] {
+  const result: ParagraphSpan[] = [];
+  for (const span of spans) {
+    switch (span.type) {
+      case 'text':
+        appendParagraphSpan(result, { kind: 'text', text: span.content });
+        break;
+      case 'bold':
+        appendParagraphSpan(result, { kind: 'bold', text: span.content });
+        break;
+      case 'italic':
+        appendParagraphSpan(result, { kind: 'italic', text: span.content });
+        break;
+      case 'inline_code':
+        appendParagraphSpan(result, { kind: 'inline_code', text: span.content });
+        break;
+      case 'link':
+        appendParagraphSpan(result, { kind: 'link', text: span.text, url: span.url });
+        break;
+    }
+  }
+  return result;
 }
 
 function toneForActivity(kind: 'activity' | 'result' | 'error'): StreamTone {
@@ -202,12 +229,35 @@ export function buildStreamRenderModel(
         appendParagraphSpan(paragraphSpans, { kind: 'italic', text: segment.content });
         break;
 
+      case 'link':
+        appendParagraphSpan(paragraphSpans, { kind: 'link', text: segment.text, url: segment.url });
+        break;
+
+      case 'heading':
+        flushParagraph(entries, paragraphSpans, 1);
+        entries.push({
+          kind: 'heading',
+          level: segment.level,
+          spans: inlineSpansToParagraphSpans(segment.spans),
+          spacingAfter: 1,
+        });
+        break;
+
+      case 'blockquote':
+        flushParagraph(entries, paragraphSpans, 1);
+        entries.push({
+          kind: 'blockquote',
+          spans: inlineSpansToParagraphSpans(segment.spans),
+          spacingAfter: 1,
+        });
+        break;
+
       case 'list_item':
         flushParagraph(entries, paragraphSpans, 1);
         entries.push({
           kind: 'list_item',
           marker: segment.marker,
-          text: segment.content,
+          spans: inlineSpansToParagraphSpans(segment.spans),
           spacingAfter: 0,
         });
         break;

@@ -1,4 +1,4 @@
-import { parseMarkdown, type MarkdownSegment } from './markdown-parser.js';
+import { parseMarkdown, type MarkdownSegment, type InlineSpan } from './markdown-parser.js';
 import type { DisplayMode } from './display-mode.js';
 import { getRoleStyle } from '../types/ui.js';
 import type { Message, RoleName } from '../types/ui.js';
@@ -118,6 +118,20 @@ function renderMessageBody(
   return lines;
 }
 
+function flattenSpans(spans: InlineSpan[]): string {
+  return spans.map((span) => {
+    switch (span.type) {
+      case 'text':
+      case 'bold':
+      case 'italic':
+      case 'inline_code':
+        return span.content;
+      case 'link':
+        return span.url ? `${span.text} (${span.url})` : span.text;
+    }
+  }).join('');
+}
+
 function segmentsToBlocks(
   segments: MarkdownSegment[],
   displayMode: DisplayMode,
@@ -154,10 +168,32 @@ function segmentsToBlocks(
         paragraph += `\`${segment.content}\``;
         break;
 
+      case 'link':
+        paragraph += segment.url ? `${segment.text} (${segment.url})` : segment.text;
+        break;
+
+      case 'heading':
+        flushParagraph();
+        blocks.push({
+          lines: [flattenSpans(segment.spans)],
+          style: { bold: true },
+        });
+        break;
+
+      case 'blockquote': {
+        flushParagraph();
+        const bqText = flattenSpans(segment.spans);
+        blocks.push({
+          lines: bqText.split('\n').map((line) => `│ ${line}`),
+          style: { dimColor: true },
+        });
+        break;
+      }
+
       case 'list_item':
         flushParagraph();
         blocks.push({
-          lines: [`${segment.marker === '-' || segment.marker === '*' ? '•' : segment.marker} ${segment.content}`],
+          lines: [`${segment.marker === '-' || segment.marker === '*' ? '•' : segment.marker} ${flattenSpans(segment.spans)}`],
           style: {},
         });
         break;

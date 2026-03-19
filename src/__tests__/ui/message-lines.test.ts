@@ -50,6 +50,53 @@ describe('message-lines', () => {
     expect(style.color).toBe('gray');
   });
 
+  it('renders heading as bold text', () => {
+    const lines = buildRenderedMessageLines(
+      [makeMessage({ content: '## My Title' })],
+      'minimal',
+      80,
+    );
+
+    const bodyLines = lines.filter((l) => l.key.includes('-body-'));
+    expect(bodyLines.some((l) => l.spans.some((s) => s.text === 'My Title' && s.bold === true))).toBe(true);
+  });
+
+  it('renders blockquote with │ prefix on every line', () => {
+    const lines = buildRenderedMessageLines(
+      [makeMessage({ content: '> Line 1\n> Line 2' })],
+      'minimal',
+      80,
+    );
+
+    const bodyLines = lines.filter((l) => l.key.includes('-body-'));
+    const bqLines = bodyLines.filter((l) => l.spans.some((s) => s.text.startsWith('│ ')));
+    expect(bqLines.length).toBe(2);
+  });
+
+  it('renders link as text with URL in parentheses', () => {
+    const lines = buildRenderedMessageLines(
+      [makeMessage({ content: 'See [docs](https://example.com)' })],
+      'minimal',
+      80,
+    );
+
+    const bodyLines = lines.filter((l) => l.key.includes('-body-'));
+    const allText = bodyLines.map((l) => l.spans.map((s) => s.text).join('')).join('');
+    expect(allText).toContain('docs (https://example.com)');
+  });
+
+  it('renders list item with inline bold', () => {
+    const lines = buildRenderedMessageLines(
+      [makeMessage({ content: '- **Bold** item' })],
+      'minimal',
+      80,
+    );
+
+    const bodyLines = lines.filter((l) => l.key.includes('-body-'));
+    const allText = bodyLines.map((l) => l.spans.map((s) => s.text).join('')).join('');
+    expect(allText).toContain('Bold item');
+  });
+
   it('keeps activity summary compact in minimal mode', () => {
     const lines = buildRenderedMessageLines(
       [
