@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Box, Text, useInput } from '../../tui/primitives.js';
 import type { Key } from '../../tui/primitives.js';
+import { buildInputAreaLayout } from '../input-area-layout.js';
 
 export interface InputAreaProps {
   isLLMRunning: boolean;
@@ -13,9 +14,6 @@ export interface InputAreaProps {
   /** Disable input handling (e.g. when overlay is open) */
   disabled?: boolean;
 }
-
-const PLACEHOLDER_RUNNING = 'Type to interrupt, or wait for completion...';
-const PLACEHOLDER_IDLE = 'Type a message...';
 
 export interface InputState {
   value: string;
@@ -150,23 +148,6 @@ export function processInput(
   return { type: 'noop' };
 }
 
-/**
- * Compute visible lines from a multiline value string, capped at maxLines.
- */
-export function getDisplayLines(value: string, maxLines: number): string[] {
-  const lines = value.split('\n');
-  return lines.slice(0, maxLines);
-}
-
-/**
- * Compute which line and column the cursor is on, given the full value and cursor position.
- */
-export function getCursorLineCol(value: string, cursorPos: number): { line: number; col: number } {
-  const before = value.slice(0, cursorPos);
-  const lines = before.split('\n');
-  return { line: lines.length - 1, col: lines[lines.length - 1]!.length };
-}
-
 export function InputArea({
   isLLMRunning,
   onSubmit,
@@ -185,10 +166,12 @@ export function InputArea({
       onValueChange?.(state.value);
     }
   }, [state.value, onValueChange]);
-
-  const displayLines = getDisplayLines(state.value, maxLines);
-  const height = Math.max(1, displayLines.length);
-  const { line: cursorLine, col: cursorCol } = getCursorLineCol(state.value, state.cursorPos);
+  const layout = buildInputAreaLayout({
+    value: state.value,
+    cursorPos: state.cursorPos,
+    isLLMRunning,
+    maxLines,
+  });
 
   useInput((input, key) => {
     if (disabled) return;
@@ -209,30 +192,25 @@ export function InputArea({
     }
   });
 
-  const showPlaceholder = state.value.length === 0;
-  const promptIcon = isLLMRunning ? '◆' : '▸';
-  const promptColor = isLLMRunning ? 'yellow' : 'cyan';
-  const placeholderText = isLLMRunning ? PLACEHOLDER_RUNNING : PLACEHOLDER_IDLE;
-
   return (
-    <Box flexDirection="column" height={height}>
-      {showPlaceholder ? (
+    <Box flexDirection="column" height={layout.height}>
+      {layout.showPlaceholder ? (
         <Box>
-          <Text color={promptColor} bold>{promptIcon} </Text>
-          <Text dimColor>{placeholderText}</Text>
+          <Text color={layout.promptColor} bold>{layout.promptIcon} </Text>
+          <Text dimColor>{layout.placeholderText}</Text>
         </Box>
       ) : (
-        displayLines.map((line, lineIdx) => (
+        layout.lines.map((line, lineIdx) => (
           <Box key={lineIdx}>
-            <Text color={promptColor} bold>{lineIdx === 0 ? `${promptIcon} ` : '  '}</Text>
-            {lineIdx === cursorLine ? (
+            <Text color={layout.promptColor} bold>{line.prefix}</Text>
+            {line.isCursorLine ? (
               <Text color="white">
-                {line.slice(0, cursorCol)}
-                <Text dimColor>█</Text>
-                {line.slice(cursorCol)}
+                {line.beforeCursor}
+                <Text inverse>{line.cursorChar}</Text>
+                {line.afterCursor}
               </Text>
             ) : (
-              <Text color="white">{line}</Text>
+              <Text color="white">{line.beforeCursor}</Text>
             )}
           </Box>
         ))

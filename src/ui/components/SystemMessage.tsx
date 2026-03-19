@@ -11,6 +11,7 @@
 import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
 import type { DisplayMode } from '../display-mode.js';
+import { getSystemMessageAppearance } from '../stream-renderer-layout.js';
 
 export interface RoutingDetails {
   question: string;
@@ -35,23 +36,24 @@ function RoutingMessage({
   routingDetails?: RoutingDetails;
 }): React.ReactElement {
   const isVerbose = displayMode === 'verbose';
+  const appearance = getSystemMessageAppearance('routing');
 
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color="yellow">· </Text>
-        <Text color="yellow" bold>[Router]</Text>
-        <Text color="yellow"> Choice detected → Forwarding to {agentName}</Text>
+        <Text color={appearance.color}>{appearance.prefix} </Text>
+        <Text color={appearance.color} bold>[Router]</Text>
+        <Text color={appearance.color}> Choice detected → Forwarding to {agentName}</Text>
       </Box>
       {isVerbose && routingDetails && (
         <>
           <Box>
-            <Text color="yellow">·   </Text>
+            <Text color={appearance.color}>{appearance.prefix}   </Text>
             <Text color="gray">Question: {routingDetails.question}</Text>
           </Box>
           {routingDetails.choices.map((choice, i) => (
             <Box key={i}>
-              <Text color="yellow">·   </Text>
+              <Text color={appearance.color}>{appearance.prefix}   </Text>
               <Text color="gray">  {i + 1}. {choice}</Text>
             </Box>
           ))}
@@ -68,20 +70,22 @@ function InterruptMessage({
   agentName: string;
   outputChars: number;
 }): React.ReactElement {
+  const appearance = getSystemMessageAppearance('interrupt');
   return (
     <Box>
-      <Text color="yellow">⚠ </Text>
-      <Text color="yellow" bold>INTERRUPTED</Text>
-      <Text color="yellow"> - {agentName} process terminated (output: {outputChars} chars)</Text>
+      <Text color={appearance.color}>{appearance.prefix} </Text>
+      <Text color={appearance.color} bold>INTERRUPTED</Text>
+      <Text color={appearance.color}> - {agentName} process terminated (output: {outputChars} chars)</Text>
     </Box>
   );
 }
 
 function WaitingMessage(): React.ReactElement {
+  const appearance = getSystemMessageAppearance('waiting');
   return (
     <Box>
-      <Text color="white">&gt; </Text>
-      <Text color="white">Waiting for your instructions...</Text>
+      <Text color={appearance.color}>{appearance.prefix} </Text>
+      <Text color={appearance.color}>Waiting for your instructions...</Text>
     </Box>
   );
 }

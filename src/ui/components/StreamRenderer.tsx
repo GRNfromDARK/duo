@@ -11,9 +11,10 @@
 
 import React, { useMemo, useState, useCallback } from 'react';
 import { Box, Text } from '../../tui/primitives.js';
-import { parseMarkdown, type MarkdownSegment } from '../markdown-parser.js';
+import { parseMarkdown } from '../markdown-parser.js';
 import { CodeBlock } from './CodeBlock.js';
 import type { DisplayMode } from '../display-mode.js';
+import { buildStreamRenderModel, toneToColor, type StreamRenderEntry } from '../stream-renderer-layout.js';
 
 export interface StreamRendererProps {
   content: string;
@@ -23,83 +24,77 @@ export interface StreamRendererProps {
 
 const SPINNER_CHARS = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
 
-type DisplaySegment = MarkdownSegment | {
-  type: 'activity_summary';
-  kind: 'activity' | 'result' | 'error';
-  summary: string;
-};
-
 function SegmentView({
-  segment,
+  entry,
   displayMode = 'minimal',
 }: {
-  segment: DisplaySegment;
+  entry: StreamRenderEntry;
   displayMode?: DisplayMode;
 }): React.ReactElement {
-  switch (segment.type) {
-    case 'text':
+  switch (entry.kind) {
+    case 'paragraph':
       return (
-        <Box flexDirection="column">
-          {segment.content.split('\n').map((line, i) => (
+        <Box flexDirection="column" marginBottom={entry.spacingAfter}>
+          {entry.text.split('\n').map((line, i) => (
             <Text key={i}>{line}</Text>
           ))}
         </Box>
       );
 
-    case 'code_block':
-      // Handled by StreamRenderer directly for state management
-      return <CodeBlock content={segment.content} language={segment.language} />;
-
     case 'activity_block':
       return (
         <ActivityBlock
-          kind={segment.kind}
-          title={segment.title}
-          content={segment.content}
+          tone={entry.tone}
+          title={entry.title}
+          content={entry.content}
           displayMode={displayMode}
+          spacingAfter={entry.spacingAfter}
         />
       );
 
     case 'activity_summary':
       return (
         <ActivitySummary
-          kind={segment.kind}
-          summary={segment.summary}
+          tone={entry.tone}
+          summary={entry.summary}
+          spacingAfter={entry.spacingAfter}
         />
       );
 
     case 'inline_code':
-      return <Text backgroundColor="gray" color="white">{segment.content}</Text>;
+      return <Text backgroundColor="gray" color="white">{entry.content}</Text>;
 
     case 'bold':
-      return <Text bold>{segment.content}</Text>;
+      return <Text bold>{entry.text}</Text>;
 
     case 'italic':
-      return <Text italic>{segment.content}</Text>;
+      return <Text italic>{entry.text}</Text>;
 
     case 'list_item': {
-      const bullet = segment.marker === '-' || segment.marker === '*'
+      const bullet = entry.marker === '-' || entry.marker === '*'
         ? '  \u2022'
-        : `  ${segment.marker}`;
+        : `  ${entry.marker}`;
       return (
-        <Text>{bullet} {segment.content}</Text>
+        <Text>{bullet} {entry.text}</Text>
       );
     }
 
     case 'table':
-      return <TableView headers={segment.headers} rows={segment.rows} />;
+      return <TableView headers={entry.headers} rows={entry.rows} spacingAfter={entry.spacingAfter} />;
 
-    default:
-      return <Text>{String((segment as Record<string, unknown>).content ?? '')}</Text>;
+    case 'code_block':
+      return <CodeBlock content={entry.content} language={entry.language} />;
   }
 }
 
 function TableView({
   headers,
   rows,
+  spacingAfter,
 }: {
   headers: string[];
   rows: string[][];
+  spacingAfter: number;
 }): React.ReactElement {
   const colWidths = headers.map((h, ci) => {
     const dataMax = rows.reduce(
@@ -112,7 +107,7 @@ function TableView({
   const pad = (s: string, width: number) => s.padEnd(width);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={spacingAfter}>
       <Text>
         {headers.map((h, i) => pad(h, colWidths[i])).join(' | ')}
       </Text>
@@ -129,50 +124,46 @@ function TableView({
 }
 
 function ActivitySummary({
-  kind,
+  tone,
   summary,
+  spacingAfter,
 }: {
-  kind: 'activity' | 'result' | 'error';
+  tone: 'accent' | 'muted' | 'warning' | 'neutral';
   summary: string;
+  spacingAfter: number;
 }): React.ReactElement {
-  const icon =
-    kind === 'error' ? '⚠' :
-    kind === 'result' ? '⎿' :
-    '⏺';
-  const color =
-    kind === 'error' ? 'red' :
-    kind === 'result' ? 'gray' :
-    'cyan';
+  const icon = tone === 'warning' ? '⚠' : tone === 'muted' ? '·' : '⏺';
+  const color = toneToColor(tone);
 
-  return <Text color={color}>{icon} {summary}</Text>;
+  return (
+    <Box marginBottom={spacingAfter}>
+      <Text color={color}>{icon} {summary}</Text>
+    </Box>
+  );
 }
 
 function ActivityBlock({
-  kind,
+  tone,
   title,
   content,
   displayMode = 'minimal',
+  spacingAfter,
 }: {
-  kind: 'activity' | 'result' | 'error';
+  tone: 'accent' | 'muted' | 'warning' | 'neutral';
   title: string;
   content: string;
   displayMode?: DisplayMode;
+  spacingAfter: number;
 }): React.ReactElement {
   const lines = content.split('\n').filter((line) => line.length > 0);
   const summary = lines[0] ?? '';
   const isVerbose = displayMode === 'verbose';
 
-  const icon =
-    kind === 'activity' ? '⏺' :
-    kind === 'result' ? '⎿' :
-    '⚠';
-  const color =
-    kind === 'error' ? 'red' :
-    kind === 'result' ? 'gray' :
-    'cyan';
+  const icon = tone === 'warning' ? '⚠' : tone === 'muted' ? '·' : '⏺';
+  const color = toneToColor(tone);
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={spacingAfter}>
       <Text color={color}>
         {icon} {title}{summary ? `: ${summary}` : ''}
       </Text>
@@ -191,8 +182,8 @@ export function StreamRenderer({
   isStreaming,
   displayMode = 'minimal',
 }: StreamRendererProps): React.ReactElement {
-  const segments = useMemo(
-    () => compactSegments(parseMarkdown(content), displayMode),
+  const renderModel = useMemo(
+    () => buildStreamRenderModel(parseMarkdown(content), displayMode),
     [content, displayMode],
   );
 
@@ -214,81 +205,24 @@ export function StreamRenderer({
 
   return (
     <Box flexDirection="column">
-      {segments.map((segment, i) => {
-        if (segment.type === 'code_block') {
+      {renderModel.map((entry, i) => {
+        if (entry.kind === 'code_block') {
           const idx = codeBlockIndex++;
           return (
             <CodeBlock
               key={i}
-              content={segment.content}
-              language={segment.language}
+              content={entry.content}
+              language={entry.language}
               expanded={expandedBlocks[idx]}
               onToggle={() => toggleBlock(idx)}
             />
           );
         }
-        return <SegmentView key={i} segment={segment} displayMode={displayMode} />;
+        return <SegmentView key={i} entry={entry} displayMode={displayMode} />;
       })}
       {isStreaming && (
         <Text color="cyan">{spinnerChar}</Text>
       )}
     </Box>
   );
-}
-
-function compactSegments(
-  segments: MarkdownSegment[],
-  displayMode: DisplayMode,
-): DisplaySegment[] {
-  if (displayMode === 'verbose') {
-    return segments;
-  }
-
-  const compacted: DisplaySegment[] = [];
-
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-
-    if (segment.type !== 'activity_block') {
-      compacted.push(segment);
-      continue;
-    }
-
-    const activityRun = [segment];
-    while (i + 1 < segments.length && segments[i + 1].type === 'activity_block') {
-      activityRun.push(segments[i + 1] as Extract<MarkdownSegment, { type: 'activity_block' }>);
-      i++;
-    }
-
-    compacted.push(summarizeActivityRun(activityRun));
-  }
-
-  return compacted;
-}
-
-function summarizeActivityRun(
-  run: Array<Extract<MarkdownSegment, { type: 'activity_block' }>>,
-): DisplaySegment {
-  const latest = run[run.length - 1];
-  const latestActivity = [...run].reverse().find((segment) => segment.kind === 'activity') ?? latest;
-  const latestSummary = latestActivity.content.split('\n').find((line) => line.trim().length > 0) ?? latestActivity.title;
-  const activityCount = run.filter((segment) => segment.kind === 'activity').length;
-  const resultCount = run.filter((segment) => segment.kind === 'result').length;
-  const errorCount = run.filter((segment) => segment.kind === 'error').length;
-  const total = run.length;
-
-  const parts: string[] = [];
-  if (activityCount > 0) parts.push(`${activityCount} actions`);
-  if (resultCount > 0) parts.push(`${resultCount} results`);
-  if (errorCount > 0) parts.push(`${errorCount} errors`);
-
-  const prefix = total > 1
-    ? `${parts.join(' · ')} · latest ${latestActivity.title}: ${latestSummary}`
-    : `${latestActivity.title}: ${latestSummary}`;
-
-  return {
-    type: 'activity_summary',
-    kind: latest.kind === 'error' ? 'error' : 'activity',
-    summary: prefix,
-  };
 }

@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
+import { buildStatusBarLayout, computeStatusBarWidth } from '../status-bar-layout.js';
 
 export type WorkflowStatus = 'idle' | 'active' | 'error' | 'routing' | 'interrupted' | 'done';
 
@@ -58,13 +59,6 @@ export function buildProgressBar(current: number, max: number, barWidth: number)
  * Segment: a piece of status bar content with optional styling.
  * Priority: lower number = more important (hidden last).
  */
-interface Segment {
-  text: string;
-  color?: string;
-  dimColor?: boolean;
-  priority: number; // 1 = critical, 5 = least important
-}
-
 export function StatusBar({
   projectPath,
   status,
@@ -81,90 +75,48 @@ export function StatusBar({
 }: StatusBarProps): React.ReactElement {
   const cfg = STATUS_CONFIG[status];
   const tokenStr = `${formatTokens(tokenCount)}tok`;
-  const agentStr = activeAgent ? `${activeAgent} ${cfg.icon} ${cfg.label}` : `${cfg.icon} ${cfg.label}`;
-
-  // Build model display string: show active role's model if set
-  const activeModel = activeAgent?.includes(':Coder') ? coderModel
-    : activeAgent?.includes(':Reviewer') ? reviewerModel
-    : undefined;
-  const modelStr = activeModel ? `⊛${activeModel}` : '';
-
-  // Show God adapter only when it differs from reviewer
-  const showGod = godAdapter && reviewerAdapter && godAdapter !== reviewerAdapter;
-  const godStr = showGod ? `God:${godAdapter}` : '';
-  const taskTypeStr = taskType ? `[${taskType}]` : '';
-  const phaseStr = currentPhase ? `φ:${currentPhase}` : '';
-  const latencyStr = godLatency !== undefined ? `${godLatency}ms` : '';
-
-  // Build segments with priorities (1=must show, 5=nice to have)
-  const leftSegments: Segment[] = [
-    { text: 'Duo', priority: 1 },
-    { text: projectPath, priority: 4 },
-    { text: agentStr, color: cfg.color, priority: 2 },
-  ];
-  if (modelStr) leftSegments.push({ text: modelStr, dimColor: true, priority: 4 });
-  if (taskTypeStr) leftSegments.push({ text: taskTypeStr, color: 'cyan', priority: 3 });
-  if (phaseStr) leftSegments.push({ text: phaseStr, color: 'magenta', priority: 3 });
-
-  const rightSegments: Segment[] = [];
-  if (godStr) rightSegments.push({ text: godStr, color: 'magenta', priority: 4 });
-  if (latencyStr) rightSegments.push({ text: latencyStr, dimColor: true, priority: 5 });
-  rightSegments.push({ text: tokenStr, dimColor: true, priority: 2 });
-
-  // Progressively remove low-priority segments if they don't fit
-  const computeWidth = (segs: Segment[]) =>
-    segs.reduce((w, s) => w + s.text.length + 2, 0); // +2 for spacing
-
-  const allSegments = [...leftSegments, ...rightSegments];
-  let totalWidth = computeWidth(allSegments) + 2; // padding
-
-  // Remove segments by lowest priority (highest number) until it fits
-  const removable = allSegments
-    .map((s, i) => ({ priority: s.priority, index: i }))
-    .sort((a, b) => b.priority - a.priority); // lowest priority first
-
-  const removedIndices = new Set<number>();
-  for (const item of removable) {
-    if (totalWidth <= columns) break;
-    if (item.priority <= 1) break; // never remove priority 1
-    removedIndices.add(item.index);
-    totalWidth -= allSegments[item.index]!.text.length + 2;
-  }
-
-  const visibleLeft = leftSegments.filter((_, i) => !removedIndices.has(i));
-  const leftOffset = leftSegments.length;
-  const visibleRight = rightSegments.filter((_, i) => !removedIndices.has(i + leftOffset));
+  const latencyStr = godLatency !== undefined ? `${godLatency}ms` : undefined;
+  const layout = buildStatusBarLayout({
+    projectPath,
+    statusLabel: cfg.label,
+    statusColor: cfg.color,
+    activeAgent,
+    tokenText: tokenStr,
+    taskType,
+    currentPhase,
+    godLatencyText: latencyStr,
+    columns,
+  });
+  const spacerWidth = Math.max(1, columns - computeStatusBarWidth(layout));
 
   return (
     <Box height={1} width={columns}>
-      <Text inverse bold>
-        {' '}
-        {visibleLeft.map((seg, i) => (
-          <React.Fragment key={i}>
-            {seg.color ? (
-              <Text color={seg.color}>{seg.text}</Text>
-            ) : seg.dimColor ? (
-              <Text dimColor>{seg.text}</Text>
-            ) : (
-              <Text>{seg.text}</Text>
-            )}
-            {'  '}
-          </React.Fragment>
-        ))}
-        {/* Spacer between left and right — use remaining space */}
-        {visibleRight.length > 0 && visibleRight.map((seg, i) => (
-          <React.Fragment key={`r${i}`}>
-            {seg.color ? (
-              <Text color={seg.color}>{seg.text}</Text>
-            ) : seg.dimColor ? (
-              <Text dimColor>{seg.text}</Text>
-            ) : (
-              <Text>{seg.text}</Text>
-            )}
-            {i < visibleRight.length - 1 ? '  ' : ' '}
-          </React.Fragment>
-        ))}
-      </Text>
+      {layout.left.map((seg, i) => (
+        <Text
+          key={seg.kind}
+          backgroundColor="black"
+          color={seg.color}
+          dimColor={seg.dimColor}
+          bold={seg.kind === 'brand' || seg.kind === 'status'}
+        >
+          {i === 0 ? ' ' : '  '}
+          {seg.kind === 'status' ? `${cfg.icon} ${seg.text}` : seg.text}
+        </Text>
+      ))}
+      <Text backgroundColor="black">{' '.repeat(spacerWidth)}</Text>
+      {layout.right.map((seg, i) => (
+        <Text
+          key={seg.kind}
+          backgroundColor="black"
+          color={seg.color}
+          dimColor={seg.dimColor}
+          bold={false}
+        >
+          {i === 0 ? '' : '  '}
+          {seg.text}
+          {i === layout.right.length - 1 ? ' ' : ''}
+        </Text>
+      ))}
     </Box>
   );
 }
