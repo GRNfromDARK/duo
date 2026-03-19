@@ -5,6 +5,7 @@ dist/
 .DS_Store
 .claude/
 .local/
+.tmp-*/
 
 # 会话数据
 .duo/sessions/

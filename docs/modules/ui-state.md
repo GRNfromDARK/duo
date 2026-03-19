@@ -45,6 +45,7 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 | `Key` interface | Ink 兼容的键盘事件类型，扩展了 `pageDown`/`pageUp`/`home`/`end`/`capsLock`/`numLock` 等字段 |
 | `useInput(handler)` | 将 `useKeyboard` 回调转换为 `(input: string, key: Key)` 签名 |
 | `usePaste(handler)` | 订阅终端 paste 事件（bracketed paste mode）。通过 `decodePasteBytes` 解码粘贴字节，`stripAnsiSequences` 清除 ANSI 转义序列后回调 handler。使用 `useRef` + `useCallback` 保持 handler 引用稳定，通过 `keyHandler.on('paste', ...)` 订阅事件 |
+| `useRenderer()` | 访问底层 `CliRenderer` 实例，用于检查 selection 状态和通过 OSC52 写入剪贴板。支持 Ctrl+C/Cmd+C 复制选中文本 |
 | `useApp()` | 返回 `{ exit }` 方法，内部调用 `renderer.destroy()` |
 | `useStdout()` | 返回 `{ stdout: process.stdout }` |
 | `Box` | 映射到 OpenTUI `<box>` 元素 |

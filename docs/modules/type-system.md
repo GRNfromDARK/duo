@@ -210,7 +210,7 @@ const DEFAULT_ROLE_STYLE: RoleStyle = { displayName: 'Agent', color: 'gray', bor
 
 | RoleName | displayName | color | border |
 |----------|-------------|-------|--------|
-| `claude-code` | Claude | `blue` | `┃` |
+| `claude-code` | Claude | `#7dcfff` | `┃` |
 | `codex` | Codex | `green` | `║` |
 | `gemini` | Gemini | `#FFA500` | `│` |
 | `system` | System | `yellow` | `·` |
