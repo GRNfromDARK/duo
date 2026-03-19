@@ -21,6 +21,15 @@ async function renderNode(node: React.ReactNode, options?: {
   alternateScreen?: boolean;
   autoExitMs?: number;
 }): Promise<void> {
+  // Enable wcwidth-based character width calculations so that CJK double-wide
+  // characters (Chinese, Japanese, Korean) are measured as 2 terminal columns.
+  // This prevents the cursor from drifting left by 1 column per CJK character.
+  // OPENTUI_FORCE_WCWIDTH is forwarded to the native Zig renderer during
+  // createCliRenderer initialisation; it must be set before the call.
+  if (!process.env.OPENTUI_FORCE_WCWIDTH) {
+    process.env.OPENTUI_FORCE_WCWIDTH = 'true';
+  }
+
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
     useAlternateScreen: options?.alternateScreen ?? true,

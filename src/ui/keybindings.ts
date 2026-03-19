@@ -49,6 +49,11 @@ export function processKeybinding(
   if (key.ctrl) {
     switch (input) {
       case 'c':
+        // NOTE: App.tsx intercepts Ctrl+C *before* this path is reached and
+        // performs clipboard copy when there is an active selection. Only when
+        // there is no selection does Ctrl+C propagate here as 'interrupt'.
+        // If MainLayout ever wires up an onInterrupt callback, keep this
+        // comment in mind so the copy-first logic in App.tsx is not bypassed.
         return { type: 'interrupt' };
       case 'n':
         return { type: 'new_session' };

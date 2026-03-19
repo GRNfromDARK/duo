@@ -33,23 +33,37 @@ export interface InputAreaLayout {
   lines: InputAreaRenderLine[];
 }
 
+/**
+ * Strip bare \r characters from a value string.
+ * The paste pipeline normalises \r\n → \n, but this guard handles any value
+ * that arrives through a legacy or unexpected path so that \r never reaches
+ * column-counting or rendering logic (a lone \r causes terminal output to
+ * jump to column 0, placing the cursor at a completely wrong position).
+ */
+function stripCR(value: string): string {
+  return value.includes('\r') ? value.replace(/\r/g, '') : value;
+}
+
 export function getDisplayLines(value: string, maxLines: number): string[] {
-  const lines = value.split('\n');
+  const lines = stripCR(value).split('\n');
   return lines.slice(0, maxLines);
 }
 
 export function getCursorLineCol(value: string, cursorPos: number): { line: number; col: number } {
-  const before = value.slice(0, cursorPos);
+  const before = stripCR(value.slice(0, cursorPos));
   const lines = before.split('\n');
   return { line: lines.length - 1, col: lines[lines.length - 1]!.length };
 }
 
 export function buildInputAreaLayout({
-  value,
+  value: rawValue,
   cursorPos,
   isLLMRunning,
   maxLines,
 }: BuildInputAreaLayoutOptions): InputAreaLayout {
+  // Normalise away any stray \r characters before layout calculations so that
+  // column widths, cursor positions, and rendered text are all consistent.
+  const value = stripCR(rawValue);
   const promptIcon = isLLMRunning ? '◆' : '▸';
   const promptColor = isLLMRunning ? 'yellow' : 'cyan';
   const statusText = isLLMRunning ? 'RUNNING' : 'READY';
@@ -77,7 +91,12 @@ export function buildInputAreaLayout({
   }
 
   const displayLines = getDisplayLines(value, maxLines);
-  const { line: cursorLine, col: cursorCol } = getCursorLineCol(value, cursorPos);
+  // Pass rawValue (before stripCR) so that getCursorLineCol can strip \r
+  // from only the prefix slice and keep the cursorPos byte-offset correct.
+  // If the value had no \r the two are identical; when it does, stripping
+  // the full value first would shift all positions after the first \r and
+  // make cursorPos point at the wrong character in the stripped string.
+  const { line: cursorLine, col: cursorCol } = getCursorLineCol(rawValue, cursorPos);
   const lines = displayLines.map((line, lineIdx) => {
     const isCursorLine = lineIdx === cursorLine;
     const prefix = lineIdx === 0 ? `${promptIcon} ` : '  ';
@@ -92,8 +111,28 @@ export function buildInputAreaLayout({
       };
     }
 
-    const cursorChar = line[cursorCol] ?? ' ';
-    const afterStart = cursorCol < line.length ? cursorCol + 1 : cursorCol;
+    // Extract the full code point at cursorCol so that emoji / surrogate-pair
+    // characters are treated as a single glyph and not split across
+    // beforeCursor / cursorChar / afterCursor.
+    const hiCode = cursorCol < line.length ? line.charCodeAt(cursorCol) : NaN;
+    const isSurrogatePair =
+      !isNaN(hiCode) &&
+      hiCode >= 0xD800 && hiCode <= 0xDBFF &&
+      cursorCol + 1 < line.length &&
+      line.charCodeAt(cursorCol + 1) >= 0xDC00 &&
+      line.charCodeAt(cursorCol + 1) <= 0xDFFF;
+    const cursorChar =
+      cursorCol >= line.length
+        ? ' '
+        : isSurrogatePair
+          ? line.slice(cursorCol, cursorCol + 2)
+          : line[cursorCol]!;
+    const afterStart =
+      cursorCol >= line.length
+        ? cursorCol
+        : isSurrogatePair
+          ? cursorCol + 2
+          : cursorCol + 1;
 
     return {
       prefix,

@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Box, useStdout, useApp, useInput } from '../../tui/primitives.js';
+import { Box, useStdout, useApp, useInput, useRenderer } from '../../tui/primitives.js';
 import { useMachine } from '@xstate/react';
 import { workflowMachine, detectRoutingConflicts } from '../../engine/workflow-machine.js';
 import type { WorkflowContext } from '../../engine/workflow-machine.js';
@@ -166,9 +166,27 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
     };
   }, [exit]);
 
-  useInput((input, key) => {
-    if (!(key.ctrl && input === 'c')) return;
+  const renderer = useRenderer();
 
+  useInput((input, key) => {
+    // Match Ctrl+C (all platforms) and Cmd+C (macOS: meta+C)
+    const isCopyKey = (key.ctrl || key.meta) && input === 'c';
+    if (!isCopyKey) return;
+
+    // If there is an active text selection, copy it to the clipboard via OSC52
+    // and do NOT trigger the interrupt/exit flow.
+    if (renderer.hasSelection) {
+      const text = renderer.getSelection()?.getSelectedText();
+      if (text) {
+        renderer.copyToClipboardOSC52(text);
+        return;
+      }
+    }
+
+    // Cmd+C (meta only, no ctrl) without a selection: ignore — don't interrupt.
+    if (!key.ctrl) return;
+
+    // Ctrl+C without selection: existing interrupt / safe-exit logic.
     const result = resolveGlobalCtrlCAction(Date.now(), lastCtrlCRef.current);
     lastCtrlCRef.current = result.nextLastCtrlCAt;
 

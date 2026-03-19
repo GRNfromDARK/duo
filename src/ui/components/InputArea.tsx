@@ -29,6 +29,49 @@ export type InputAction =
   | { type: 'special'; key: string }
   | { type: 'noop' };
 
+// ---------------------------------------------------------------------------
+// Code-point-safe index helpers
+//
+// JavaScript strings are UTF-16. Characters outside the Basic Multilingual
+// Plane (emoji, some rare CJK extension blocks) are encoded as surrogate
+// pairs: a high surrogate (0xD800–0xDBFF) followed by a low surrogate
+// (0xDC00–0xDFFF).  Using raw ±1 arithmetic when navigating or deleting can
+// land the cursor *inside* a pair, causing one half of the character to be
+// rendered as replacement glyphs and producing an incorrect column count.
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the index of the code-point boundary strictly before `pos`.
+ * Steps back 2 if the previous two code units form a surrogate pair; 1 otherwise.
+ */
+export function prevCodePointIndex(str: string, pos: number): number {
+  if (pos <= 0) return 0;
+  const lo = str.charCodeAt(pos - 1);
+  if (lo >= 0xDC00 && lo <= 0xDFFF && pos >= 2) {
+    const hi = str.charCodeAt(pos - 2);
+    if (hi >= 0xD800 && hi <= 0xDBFF) {
+      return pos - 2;
+    }
+  }
+  return pos - 1;
+}
+
+/**
+ * Return the index of the code-point boundary strictly after `pos`.
+ * Steps forward 2 if the code unit at `pos` is a high surrogate; 1 otherwise.
+ */
+export function nextCodePointIndex(str: string, pos: number): number {
+  if (pos >= str.length) return str.length;
+  const hi = str.charCodeAt(pos);
+  if (hi >= 0xD800 && hi <= 0xDBFF && pos + 1 < str.length) {
+    const lo = str.charCodeAt(pos + 1);
+    if (lo >= 0xDC00 && lo <= 0xDFFF) {
+      return pos + 2;
+    }
+  }
+  return pos + 1;
+}
+
 /**
  * Pure function: given current state, input char and key flags, return the action.
  * Supports cursor movement (left/right, Home/End, Ctrl+A/Ctrl+E) and
@@ -85,23 +128,26 @@ export function processInput(
     return { type: 'update', value: newValue, cursorPos };
   }
 
-  // Backspace -> delete char before cursor
+  // Backspace -> delete the code point immediately before the cursor.
+  // Using prevCodePointIndex ensures a full surrogate pair is removed as one
+  // unit rather than leaving an orphaned surrogate in the string.
   if (key.backspace || key.delete) {
     if (cursorPos > 0) {
-      const newValue = currentValue.slice(0, cursorPos - 1) + currentValue.slice(cursorPos);
-      return { type: 'update', value: newValue, cursorPos: cursorPos - 1 };
+      const deleteFrom = prevCodePointIndex(currentValue, cursorPos);
+      const newValue = currentValue.slice(0, deleteFrom) + currentValue.slice(cursorPos);
+      return { type: 'update', value: newValue, cursorPos: deleteFrom };
     }
     return { type: 'update', value: currentValue, cursorPos };
   }
 
-  // Left arrow -> move cursor left
+  // Left arrow -> move cursor left by one code point (not one code unit).
   if (key.leftArrow) {
-    return { type: 'update', value: currentValue, cursorPos: Math.max(0, cursorPos - 1) };
+    return { type: 'update', value: currentValue, cursorPos: prevCodePointIndex(currentValue, cursorPos) };
   }
 
-  // Right arrow -> move cursor right
+  // Right arrow -> move cursor right by one code point (not one code unit).
   if (key.rightArrow) {
-    return { type: 'update', value: currentValue, cursorPos: Math.min(currentValue.length, cursorPos + 1) };
+    return { type: 'update', value: currentValue, cursorPos: nextCodePointIndex(currentValue, cursorPos) };
   }
 
   // Home -> start of current line
