@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text } from '../../tui/primitives.js';
+import { Text } from '../../tui/primitives.js';
 import type { Message, RoleName } from '../../types/ui.js';
+import { Row } from '../tui-layout.js';
 
 export interface ThinkingIndicatorProps {
   columns: number;
@@ -116,9 +117,9 @@ export function ThinkingIndicator({
   const elapsedSuffix = showElapsed ? ` (${elapsedSeconds}s)` : '';
 
   return (
-    <Box height={1} width={columns}>
+    <Row height={1} width={columns}>
       <Text color={effectiveColor}>{spinner}</Text>
       <Text color={effectiveColor}> {message}{elapsedSuffix}</Text>
-    </Box>
+    </Row>
   );
 }

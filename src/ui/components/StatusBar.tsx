@@ -9,8 +9,9 @@
  */
 
 import React from 'react';
-import { Box, Text } from '../../tui/primitives.js';
+import { Text } from '../../tui/primitives.js';
 import { buildStatusBarLayout, computeStatusBarWidth } from '../status-bar-layout.js';
+import { Row } from '../tui-layout.js';
 
 export type WorkflowStatus = 'idle' | 'active' | 'error' | 'routing' | 'interrupted' | 'done';
 
@@ -90,7 +91,7 @@ export function StatusBar({
   const spacerWidth = Math.max(1, columns - computeStatusBarWidth(layout));
 
   return (
-    <Box height={1} width={columns}>
+    <Row height={1} width={columns}>
       {layout.left.map((seg, i) => (
         <Text
           key={seg.kind}
@@ -117,6 +118,6 @@ export function StatusBar({
           {i === layout.right.length - 1 ? ' ' : ''}
         </Text>
       ))}
-    </Box>
+    </Row>
   );
 }

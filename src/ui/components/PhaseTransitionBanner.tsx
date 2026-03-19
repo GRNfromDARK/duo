@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, useStdout } from '../../tui/primitives.js';
 import {
   createPhaseTransitionBannerState,
   handlePhaseTransitionKeyPress,
@@ -17,6 +17,8 @@ import {
   PHASE_TICK_INTERVAL_MS,
   type PhaseTransitionBannerState,
 } from '../phase-transition-banner.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, Panel, Row, SectionTitle } from '../tui-layout.js';
 
 export interface PhaseTransitionBannerProps {
   nextPhaseId: string;
@@ -31,6 +33,8 @@ export function PhaseTransitionBanner({
   onConfirm,
   onCancel,
 }: PhaseTransitionBannerProps): React.ReactElement {
+  const { stdout } = useStdout();
+  const panelWidth = computeOverlaySurfaceWidth(stdout.columns || 80);
   const [state, setState] = useState<PhaseTransitionBannerState>(() =>
     createPhaseTransitionBannerState(nextPhaseId, previousPhaseSummary),
   );
@@ -79,31 +83,28 @@ export function PhaseTransitionBanner({
   const secondsLeft = (state.countdown / 1000).toFixed(1);
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="magenta"
-      paddingX={1}
-    >
-      <Box>
-        <Text color="magenta" bold>⚡ Phase Transition</Text>
-        <Text>  → {nextPhaseId}</Text>
-      </Box>
+    <CenteredContent width={panelWidth} height="100%" justifyContent="center">
+      <Panel tone="section" width={panelWidth} borderColor="magenta" paddingX={2}>
+        <Row>
+          <SectionTitle title="Phase Transition" tone="hero" />
+          <Text>  → {nextPhaseId}</Text>
+        </Row>
 
-      {previousPhaseSummary && (
-        <Box marginTop={1}>
-          <Text dimColor>{previousPhaseSummary.slice(0, 120)}</Text>
-        </Box>
-      )}
+        {previousPhaseSummary && (
+          <Row marginTop={1}>
+            <Text dimColor>{previousPhaseSummary.slice(0, 120)}</Text>
+          </Row>
+        )}
 
-      <Box marginTop={1}>
-        <Text color="magenta">{bar}</Text>
-        <Text>  {secondsLeft}s</Text>
-      </Box>
+        <Row marginTop={1}>
+          <Text color="magenta">{bar}</Text>
+          <Text>  {secondsLeft}s</Text>
+        </Row>
 
-      <Box marginTop={1}>
-        <Text dimColor>[Space] confirm transition   [Esc] stay in current phase</Text>
-      </Box>
-    </Box>
+        <Row marginTop={1}>
+          <FooterHint text="[Space] confirm transition   [Esc] stay in current phase" />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

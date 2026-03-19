@@ -192,6 +192,8 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
       <SetupWizard
         detected={detected}
         initialConfig={initialConfig}
+        columns={columns}
+        rows={rows}
         onComplete={(config) => setSessionConfig(config)}
       />
     );

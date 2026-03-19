@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Box, Text, ScrollBox, useInput } from '../../tui/primitives.js';
+import { Box, ScrollBox, Text, useInput } from '../../tui/primitives.js';
 import { InputArea } from './InputArea.js';
 import { StatusBar, type WorkflowStatus } from './StatusBar.js';
 import { TaskBanner } from './TaskBanner.js';
@@ -20,6 +20,8 @@ import {
   computeSearchResults,
   type OverlayState,
 } from '../overlay-state.js';
+import { computeSessionContentWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, Divider, Row } from '../tui-layout.js';
 
 export type WorkflowStateHint =
   | { phase: 'idle' }
@@ -134,6 +136,7 @@ export function MainLayout({
   );
   const footerBodyHeight = Math.max(1, activeFooterHeight - FOOTER_SEPARATOR_HEIGHT);
   const separatorWidth = Math.max(1, columns - 2);
+  const sessionContentWidth = computeSessionContentWidth(columns);
 
   const scrollRef = useRef<any>(null);
   const [displayMode, setDisplayMode] = useState<DisplayMode>('minimal');
@@ -220,7 +223,7 @@ export function MainLayout({
   const hasOverlay = overlayState.activeOverlay !== null;
 
   return (
-    <Box flexDirection="column" width={columns} height={rows}>
+    <Column width={columns} height={rows}>
       {hasOverlay ? (
         <>
           {overlayState.activeOverlay === 'help' && (
@@ -267,21 +270,22 @@ export function MainLayout({
               godLatency={statusBarProps.godLatency}
             />
           ) : (
-            <Box height={STATUS_BAR_HEIGHT}>
-              <Text inverse bold> {statusText ?? ''} </Text>
-            </Box>
+            <Row height={STATUS_BAR_HEIGHT} width={columns}>
+              <Text inverse>{` ${statusText ?? ''}`}</Text>
+            </Row>
           )}
 
           {hasTaskBanner && (
             <TaskBanner
               taskSummary={contextData!.taskSummary}
               columns={columns}
+              contentWidth={sessionContentWidth}
             />
           )}
 
-          <Box height={1}>
-            <Text dimColor>{` ${'─'.repeat(separatorWidth)}`}</Text>
-          </Box>
+          <Row height={1}>
+            <Divider width={separatorWidth + 1} />
+          </Row>
 
           <ScrollBox
             ref={scrollRef}
@@ -293,56 +297,59 @@ export function MainLayout({
             viewportCulling={false}
             scrollbarOptions={{ backgroundColor: 'black' }}
           >
-            <Box flexDirection="column" width={columns}>
-              {visibleMessages.map((message) => (
-                <MessageView
-                  key={message.id}
-                  message={message}
-                  displayMode={displayMode}
-                  columns={columns}
-                />
-              ))}
-              {indicatorConfig && (
-                <ThinkingIndicator
-                  columns={columns}
-                  message={indicatorConfig.message}
-                  color={indicatorConfig.color}
-                  showElapsed={indicatorConfig.showElapsed}
-                />
-              )}
-              {isThinking && !indicatorConfig && (
-                <ThinkingIndicator columns={columns} />
-              )}
-            </Box>
+            <Row width={columns} justifyContent="center">
+              <Column width={sessionContentWidth}>
+                {visibleMessages.map((message) => (
+                  <MessageView
+                    key={message.id}
+                    message={message}
+                    displayMode={displayMode}
+                    columns={sessionContentWidth}
+                  />
+                ))}
+                {indicatorConfig && (
+                  <ThinkingIndicator
+                    columns={sessionContentWidth}
+                    message={indicatorConfig.message}
+                    color={indicatorConfig.color}
+                    showElapsed={indicatorConfig.showElapsed}
+                  />
+                )}
+                {isThinking && !indicatorConfig && (
+                  <ThinkingIndicator columns={sessionContentWidth} />
+                )}
+              </Column>
+            </Row>
           </ScrollBox>
 
-          <Box flexDirection="column" height={activeFooterHeight}>
-            <Box height={FOOTER_SEPARATOR_HEIGHT}>
-              <Text dimColor>{` ${'─'.repeat(separatorWidth)}`}</Text>
-            </Box>
-            <Box
-              flexDirection="column"
+          <Column height={activeFooterHeight}>
+            <Row height={FOOTER_SEPARATOR_HEIGHT}>
+              <Divider width={separatorWidth + 1} />
+            </Row>
+            <Column
               height={footerBodyHeight}
               paddingX={1}
               overflow="hidden"
             >
-              {footer ? footer : (
-                <InputArea
-                  isLLMRunning={isLLMRunning}
-                  onSubmit={onInputSubmit ?? (() => {})}
-                  maxLines={footerBodyHeight}
-                  onValueChange={(value) => setInputEmpty(value === '')}
-                  onSpecialKey={(value) => {
-                    if (value === '?') setOverlayState((state) => openOverlay(state, 'help'));
-                    if (value === '/') setOverlayState((state) => openOverlay(state, 'search'));
-                  }}
-                  disabled={hasOverlay}
-                />
-              )}
-            </Box>
-          </Box>
+              <CenteredContent width={sessionContentWidth} height={footerBodyHeight}>
+                {footer ? footer : (
+                  <InputArea
+                    isLLMRunning={isLLMRunning}
+                    onSubmit={onInputSubmit ?? (() => {})}
+                    maxLines={footerBodyHeight}
+                    onValueChange={(value) => setInputEmpty(value === '')}
+                    onSpecialKey={(value) => {
+                      if (value === '?') setOverlayState((state) => openOverlay(state, 'help'));
+                      if (value === '/') setOverlayState((state) => openOverlay(state, 'search'));
+                    }}
+                    disabled={hasOverlay}
+                  />
+                )}
+              </CenteredContent>
+            </Column>
+          </Column>
         </>
       )}
-    </Box>
+    </Column>
   );
 }

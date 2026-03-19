@@ -7,13 +7,15 @@
  */
 
 import React, { useState } from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, useStdout } from '../../tui/primitives.js';
 import type { TaskType } from '../task-analysis-card.js';
 import {
   createReclassifyState,
   handleReclassifyKey,
   type ReclassifyOverlayState,
 } from '../reclassify-overlay.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, LabelValueRow, Panel, Row, SectionTitle, SelectionRow } from '../tui-layout.js';
 
 export interface ReclassifyOverlayProps {
   currentType: string;
@@ -34,6 +36,8 @@ export function ReclassifyOverlay({
   onSelect,
   onCancel,
 }: ReclassifyOverlayProps): React.ReactElement {
+  const { stdout } = useStdout();
+  const panelWidth = computeOverlaySurfaceWidth(stdout.columns || 80);
   const [state, setState] = useState<ReclassifyOverlayState>(() =>
     createReclassifyState(currentType as TaskType),
   );
@@ -59,51 +63,43 @@ export function ReclassifyOverlay({
   });
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      {/* Header */}
-      <Box justifyContent="center">
-        <Text color="cyan" bold>{'◈ '}</Text>
-        <Text color="cyan" bold>Reclassify Task</Text>
-      </Box>
+    <CenteredContent width={panelWidth} height="100%" justifyContent="center">
+      <Panel tone="overlay" width={panelWidth} paddingX={2}>
+        <Row justifyContent="center">
+          <SectionTitle title="Reclassify Task" tone="hero" />
+        </Row>
 
-      {/* Current info */}
-      <Box marginTop={1} flexDirection="column">
-        <Box>
-          <Text dimColor>{'Current type   '}</Text>
-          <Text bold>[{currentType}]</Text>
-          <Text dimColor>{'  '}{RECLASSIFY_LABELS[currentType] ?? ''}</Text>
-        </Box>
-      </Box>
+        <Column marginTop={1}>
+          <LabelValueRow
+            label="Current"
+            value={<>
+              <Text bold>[{currentType}]</Text>
+              <Text dimColor>{`  ${RECLASSIFY_LABELS[currentType] ?? ''}`}</Text>
+            </>}
+            labelWidth={10}
+          />
+        </Column>
 
-      {/* Type selection list */}
-      <Box flexDirection="column" marginTop={1}>
-        {state.availableTypes.map((type, i) => {
-          const isSelected = state.selectedType === type;
-          const isCurrent = type === currentType;
-          return (
-            <Box key={type}>
-              <Text color={isSelected ? 'cyan' : undefined}>
-                {isSelected ? '❯ ' : '  '}
-              </Text>
-              <Text color={isSelected ? 'cyan' : 'white'} bold={isSelected}>
-                [{i + 1}] {type.padEnd(10)}
-              </Text>
-              <Text dimColor>{RECLASSIFY_LABELS[type] ?? ''}</Text>
-              {isCurrent && <Text color="yellow">{' ← current'}</Text>}
-            </Box>
-          );
-        })}
-      </Box>
+        <Column marginTop={1}>
+          {state.availableTypes.map((type, i) => {
+            const isCurrent = type === currentType;
+            return (
+              <Row key={type}>
+                <SelectionRow
+                  label={`[${i + 1}] ${type.padEnd(10)}`}
+                  selected={state.selectedType === type}
+                />
+                <Text dimColor>{` ${RECLASSIFY_LABELS[type] ?? ''}`}</Text>
+                {isCurrent && <Text color="yellow">{' ← current'}</Text>}
+              </Row>
+            );
+          })}
+        </Column>
 
-      {/* Keyboard hints */}
-      <Box marginTop={1}>
-        <Text dimColor>[↑↓] select   [Enter] confirm   [Esc] cancel</Text>
-      </Box>
-    </Box>
+        <Row marginTop={1}>
+          <FooterHint text="[↑↓] select   [Enter] confirm   [Esc] cancel" />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

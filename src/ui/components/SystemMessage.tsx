@@ -9,9 +9,10 @@
  */
 
 import React from 'react';
-import { Box, Text } from '../../tui/primitives.js';
+import { Text } from '../../tui/primitives.js';
 import type { DisplayMode } from '../display-mode.js';
 import { getSystemMessageAppearance } from '../stream-renderer-layout.js';
+import { Column, Row } from '../tui-layout.js';
 
 export interface RoutingDetails {
   question: string;
@@ -39,27 +40,27 @@ function RoutingMessage({
   const appearance = getSystemMessageAppearance('routing');
 
   return (
-    <Box flexDirection="column">
-      <Box>
+    <Column>
+      <Row>
         <Text color={appearance.color}>{appearance.prefix} </Text>
         <Text color={appearance.color} bold>[Router]</Text>
         <Text color={appearance.color}> Choice detected → Forwarding to {agentName}</Text>
-      </Box>
+      </Row>
       {isVerbose && routingDetails && (
         <>
-          <Box>
+          <Row>
             <Text color={appearance.color}>{appearance.prefix}   </Text>
             <Text color="gray">Question: {routingDetails.question}</Text>
-          </Box>
+          </Row>
           {routingDetails.choices.map((choice, i) => (
-            <Box key={i}>
+            <Row key={i}>
               <Text color={appearance.color}>{appearance.prefix}   </Text>
               <Text color="gray">  {i + 1}. {choice}</Text>
-            </Box>
+            </Row>
           ))}
         </>
       )}
-    </Box>
+    </Column>
   );
 }
 
@@ -72,21 +73,21 @@ function InterruptMessage({
 }): React.ReactElement {
   const appearance = getSystemMessageAppearance('interrupt');
   return (
-    <Box>
+    <Row>
       <Text color={appearance.color}>{appearance.prefix} </Text>
       <Text color={appearance.color} bold>INTERRUPTED</Text>
       <Text color={appearance.color}> - {agentName} process terminated (output: {outputChars} chars)</Text>
-    </Box>
+    </Row>
   );
 }
 
 function WaitingMessage(): React.ReactElement {
   const appearance = getSystemMessageAppearance('waiting');
   return (
-    <Box>
+    <Row>
       <Text color={appearance.color}>{appearance.prefix} </Text>
       <Text color={appearance.color}>Waiting for your instructions...</Text>
-    </Box>
+    </Row>
   );
 }
 

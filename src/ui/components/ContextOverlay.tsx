@@ -3,7 +3,8 @@
  * Source: FR-022 (AC-072)
  */
 import React from 'react';
-import { Box, Text } from '../../tui/primitives.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, LabelValueRow, Panel, Row, SectionTitle } from '../tui-layout.js';
 
 export interface ContextOverlayProps {
   columns: number;
@@ -22,52 +23,25 @@ export function ContextOverlay({
   taskSummary,
   tokenEstimate,
 }: ContextOverlayProps): React.ReactElement {
+  const panelWidth = computeOverlaySurfaceWidth(columns);
   return (
-    <Box
-      flexDirection="column"
-      width={columns}
-      height={rows}
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      <Box justifyContent="center">
-        <Text bold color="cyan"> Context Summary </Text>
-      </Box>
+    <CenteredContent width={panelWidth} height={rows} justifyContent="center">
+      <Panel tone="overlay" width={panelWidth} paddingX={2}>
+        <Row justifyContent="center">
+          <SectionTitle title="Context Summary" tone="hero" />
+        </Row>
 
-      <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <Box width={16}>
-            <Text bold>Coder:</Text>
-          </Box>
-          <Text color="blue">{coderName}</Text>
-        </Box>
+        <Column marginTop={1}>
+          <LabelValueRow label="Coder" value={coderName} valueColor="blue" />
+          <LabelValueRow label="Reviewer" value={reviewerName} valueColor="green" />
+          <LabelValueRow label="Task" value={taskSummary} />
+          <LabelValueRow label="Tokens" value={String(tokenEstimate)} />
+        </Column>
 
-        <Box>
-          <Box width={16}>
-            <Text bold>Reviewer:</Text>
-          </Box>
-          <Text color="green">{reviewerName}</Text>
-        </Box>
-
-        <Box>
-          <Box width={16}>
-            <Text bold>Task:</Text>
-          </Box>
-          <Text>{taskSummary}</Text>
-        </Box>
-
-        <Box>
-          <Box width={16}>
-            <Text bold>Tokens:</Text>
-          </Box>
-          <Text>{tokenEstimate}</Text>
-        </Box>
-      </Box>
-
-      <Box justifyContent="center" marginTop={1}>
-        <Text dimColor>Press Esc to close</Text>
-      </Box>
-    </Box>
+        <Row justifyContent="center" marginTop={1}>
+          <FooterHint text="Press Esc to close" />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

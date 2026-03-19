@@ -4,6 +4,8 @@
  */
 import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, Panel, Row, SectionTitle } from '../tui-layout.js';
 
 export interface TimelineEvent {
   timestamp: number;
@@ -31,43 +33,39 @@ export function TimelineOverlay({
   rows,
   events,
 }: TimelineOverlayProps): React.ReactElement {
+  const panelWidth = computeOverlaySurfaceWidth(columns);
   const maxVisible = rows - 6;
 
   return (
-    <Box
-      flexDirection="column"
-      width={columns}
-      height={rows}
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      <Box justifyContent="center">
-        <Text bold color="cyan"> Event Timeline </Text>
-      </Box>
+    <CenteredContent width={panelWidth} height={rows} justifyContent="center">
+      <Panel tone="overlay" width={panelWidth} paddingX={2}>
+        <Row justifyContent="center">
+          <SectionTitle title="Event Timeline" tone="hero" />
+        </Row>
 
-      <Box flexDirection="column" height={maxVisible} overflow="hidden">
-        {events.length === 0 ? (
-          <Text dimColor>No events yet</Text>
-        ) : (
-          events.slice(-maxVisible).map((event, i) => {
-            const time = new Date(event.timestamp).toLocaleTimeString();
-            const color = EVENT_COLORS[event.type] ?? 'white';
-            return (
-              <Box key={i}>
-                <Box width={12}>
-                  <Text dimColor>{time}</Text>
-                </Box>
-                <Text color={color}>{event.description}</Text>
-              </Box>
-            );
-          })
-        )}
-      </Box>
+        <Column height={maxVisible} overflow="hidden">
+          {events.length === 0 ? (
+            <Text dimColor>No events yet</Text>
+          ) : (
+            events.slice(-maxVisible).map((event, i) => {
+              const time = new Date(event.timestamp).toLocaleTimeString();
+              const color = EVENT_COLORS[event.type] ?? 'white';
+              return (
+                <Row key={i}>
+                  <Box width={12}>
+                    <Text dimColor>{time}</Text>
+                  </Box>
+                  <Text color={color}>{event.description}</Text>
+                </Row>
+              );
+            })
+          )}
+        </Column>
 
-      <Box justifyContent="center" marginTop={1}>
-        <Text dimColor>Press Esc to close</Text>
-      </Box>
-    </Box>
+        <Row justifyContent="center" marginTop={1}>
+          <FooterHint text="Press Esc to close" />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

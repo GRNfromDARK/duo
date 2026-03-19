@@ -5,6 +5,8 @@
 import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
 import { KEYBINDING_LIST } from '../keybindings.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, Panel, Row, SectionTitle } from '../tui-layout.js';
 
 export interface HelpOverlayProps {
   columns: number;
@@ -12,35 +14,31 @@ export interface HelpOverlayProps {
 }
 
 export function HelpOverlay({ columns, rows }: HelpOverlayProps): React.ReactElement {
+  const panelWidth = computeOverlaySurfaceWidth(columns);
   const maxVisible = rows - 6; // title + border + footer
 
   return (
-    <Box
-      flexDirection="column"
-      width={columns}
-      height={rows}
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      <Box justifyContent="center">
-        <Text bold color="cyan"> Keybindings </Text>
-      </Box>
+    <CenteredContent width={panelWidth} height={rows} justifyContent="center">
+      <Panel tone="overlay" width={panelWidth} paddingX={2}>
+        <Row justifyContent="center">
+          <SectionTitle title="Keybindings" tone="hero" />
+        </Row>
 
-      <Box flexDirection="column" height={maxVisible} overflow="hidden">
-        {KEYBINDING_LIST.slice(0, maxVisible).map((entry) => (
-          <Box key={entry.shortcut}>
-            <Box width={18}>
-              <Text bold color="yellow">{entry.shortcut}</Text>
-            </Box>
-            <Text>{entry.description}</Text>
-          </Box>
-        ))}
-      </Box>
+        <Column height={maxVisible} overflow="hidden">
+          {KEYBINDING_LIST.slice(0, maxVisible).map((entry) => (
+            <Row key={entry.shortcut}>
+              <Box width={18}>
+                <Text bold color="yellow">{entry.shortcut}</Text>
+              </Box>
+              <Text>{entry.description}</Text>
+            </Row>
+          ))}
+        </Column>
 
-      <Box justifyContent="center" marginTop={1}>
-        <Text dimColor>Press Esc to close</Text>
-      </Box>
-    </Box>
+        <Row justifyContent="center" marginTop={1}>
+          <FooterHint text="Press Esc to close" />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

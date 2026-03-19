@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, useStdout } from '../../tui/primitives.js';
 import type { GodTaskAnalysis } from '../../types/god-schemas.js';
 import {
   createTaskAnalysisCardState,
@@ -17,6 +17,8 @@ import {
   type TaskAnalysisCardState,
   type TaskType,
 } from '../task-analysis-card.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, Panel, Row, SectionTitle, SelectionRow } from '../tui-layout.js';
 
 export interface TaskAnalysisCardProps {
   analysis: GodTaskAnalysis;
@@ -92,6 +94,8 @@ export function TaskAnalysisCard({
   onConfirm,
   onTimeout,
 }: TaskAnalysisCardProps): React.ReactElement {
+  const { stdout } = useStdout();
+  const panelWidth = computeOverlaySurfaceWidth(stdout.columns || 80);
   const [state, setState] = useState<TaskAnalysisCardState>(() =>
     createTaskAnalysisCardState(analysis),
   );
@@ -140,54 +144,48 @@ export function TaskAnalysisCard({
   const t = isCJK(analysis.reasoning) ? ZH : EN;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1}>
-      {/* Header */}
-      <Box justifyContent="space-between">
-        <Text color="cyan" bold>{t.header}</Text>
-        <Text color={state.countdownPaused ? 'yellow' : 'cyan'}>
-          {state.confirmed
-            ? t.confirmed
-            : state.countdownPaused
-              ? t.paused
-              : t.autoStart(state.countdown)}
-        </Text>
-      </Box>
+    <CenteredContent width={panelWidth} height="100%" justifyContent="center">
+      <Panel tone="overlay" width={panelWidth} paddingX={2}>
+        <Row justifyContent="space-between">
+          <SectionTitle title={t.header} tone="hero" />
+          <Text color={state.countdownPaused ? 'yellow' : 'cyan'}>
+            {state.confirmed
+              ? t.confirmed
+              : state.countdownPaused
+                ? t.paused
+                : t.autoStart(state.countdown)}
+          </Text>
+        </Row>
 
-      {/* Task summary */}
-      <Box marginTop={1}>
-        <Text dimColor>{t.task}</Text>
-        <Text>&quot;{analysis.reasoning.slice(0, 60)}{analysis.reasoning.length > 60 ? '…' : ''}&quot;</Text>
-      </Box>
+        <Row marginTop={1}>
+          <Text dimColor>{t.task}</Text>
+          <Text>&quot;{analysis.reasoning.slice(0, 60)}{analysis.reasoning.length > 60 ? '…' : ''}&quot;</Text>
+        </Row>
 
-      {/* Task type selection list */}
-      <Box flexDirection="column" marginTop={1}>
-        {TASK_TYPE_LIST.map((type, i) => {
-          const isSelected = state.selectedType === type;
-          const isRecommended = type === recommended;
-          return (
-            <Box key={type}>
-              <Text color={isSelected ? 'cyan' : undefined}>
-                {isSelected ? '❯ ' : '  '}
-              </Text>
-              <Text color={isSelected ? 'cyan' : 'white'} bold={isSelected}>
-                [{i + 1}] {type.padEnd(10)}
-              </Text>
-              <Text dimColor>{t.labels[type]}</Text>
-              {isRecommended && <Text color="yellow"> {t.recommended}</Text>}
-            </Box>
-          );
-        })}
-      </Box>
+        <Column marginTop={1}>
+          {TASK_TYPE_LIST.map((type, i) => {
+            const isRecommended = type === recommended;
+            return (
+              <Row key={type}>
+                <SelectionRow
+                  label={`[${i + 1}] ${type.padEnd(10)}`}
+                  selected={state.selectedType === type}
+                />
+                <Text dimColor>{t.labels[type]}</Text>
+                {isRecommended && <Text color="yellow"> {t.recommended}</Text>}
+              </Row>
+            );
+          })}
+        </Column>
 
-      {/* Confidence */}
-      <Box marginTop={1}>
-        <Text dimColor>{t.confidence}: {Math.round(analysis.confidence * 100)}%</Text>
-      </Box>
+        <Row marginTop={1}>
+          <Text dimColor>{t.confidence}: {Math.round(analysis.confidence * 100)}%</Text>
+        </Row>
 
-      {/* Keyboard hints */}
-      <Box marginTop={1}>
-        <Text dimColor>{t.hints(Math.min(TASK_TYPE_LIST.length, 9))}</Text>
-      </Box>
-    </Box>
+        <Row marginTop={1}>
+          <FooterHint text={t.hints(Math.min(TASK_TYPE_LIST.length, 9))} />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

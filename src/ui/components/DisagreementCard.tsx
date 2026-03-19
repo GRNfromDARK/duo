@@ -4,7 +4,9 @@
  */
 
 import React from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, useStdout } from '../../tui/primitives.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, Panel, Row, SectionTitle } from '../tui-layout.js';
 
 export type DisagreementAction = 'continue' | 'decide' | 'accept_coder' | 'accept_reviewer';
 
@@ -21,6 +23,8 @@ export function DisagreementCard({
   totalPoints,
   onAction,
 }: DisagreementCardProps): React.ReactElement {
+  const { stdout } = useStdout();
+  const panelWidth = computeOverlaySurfaceWidth(stdout.columns || 80);
   const disputedPoints = totalPoints - agreedPoints;
 
   useInput((input) => {
@@ -32,24 +36,26 @@ export function DisagreementCard({
   });
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-      <Box>
-        <Text color="yellow" bold>⚡ DISAGREEMENT</Text>
-        <Text color="yellow"> · Round {currentRound}</Text>
-      </Box>
-      <Text color="gray">
-        Agreed: {agreedPoints}/{totalPoints}    Disputed: {disputedPoints}/{totalPoints}
-      </Text>
-      <Box marginTop={1} flexDirection="column">
-        <Box>
-          <Text color="cyan" bold>[C]</Text><Text> Continue  </Text>
-          <Text color="cyan" bold>[D]</Text><Text> Decide manually</Text>
-        </Box>
-        <Box>
-          <Text color="cyan" bold>[A]</Text><Text> Accept Coder's  </Text>
-          <Text color="cyan" bold>[B]</Text><Text> Accept Reviewer's</Text>
-        </Box>
-      </Box>
-    </Box>
+    <CenteredContent width={panelWidth} height="100%" justifyContent="center">
+      <Panel tone="warning" width={panelWidth} paddingX={2}>
+        <Row>
+          <SectionTitle title="Disagreement" tone="warning" />
+          <Text color="yellow"> · Round {currentRound}</Text>
+        </Row>
+        <Text color="gray">
+          Agreed: {agreedPoints}/{totalPoints}    Disputed: {disputedPoints}/{totalPoints}
+        </Text>
+        <Column marginTop={1}>
+          <Row>
+            <Text color="cyan" bold>[C]</Text><Text> Continue  </Text>
+            <Text color="cyan" bold>[D]</Text><Text> Decide manually</Text>
+          </Row>
+          <Row>
+            <Text color="cyan" bold>[A]</Text><Text> Accept Coder's  </Text>
+            <Text color="cyan" bold>[B]</Text><Text> Accept Reviewer's</Text>
+          </Row>
+        </Column>
+      </Panel>
+    </CenteredContent>
   );
 }

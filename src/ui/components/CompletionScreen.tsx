@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from '../../tui/primitives.js';
+import { Text, useInput, useStdout } from '../../tui/primitives.js';
 import type { Key } from '../../tui/primitives.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, LabelValueRow, Panel, PromptRow, Row, SectionTitle, SelectionRow } from '../tui-layout.js';
 
 export type CompletionMode = 'menu' | 'continue' | 'new-task';
 
@@ -104,6 +106,8 @@ export function CompletionScreen({
   onExit,
   variant = 'fullscreen',
 }: CompletionScreenProps): React.ReactElement {
+  const { stdout } = useStdout();
+  const fullscreenWidth = computeOverlaySurfaceWidth(stdout.columns || 80);
   const [mode, setMode] = useState<CompletionMode>('menu');
   const [selected, setSelected] = useState(0);
   const [value, setValue] = useState('');
@@ -148,95 +152,86 @@ export function CompletionScreen({
 
     if (variant === 'inline') {
       return (
-        <Box flexDirection="column">
-          <Text color="green" bold>{title}</Text>
-          <Text dimColor>{prompt}</Text>
+        <Column>
+          <SectionTitle title={title} tone="hero" />
+          <FooterHint text={prompt} />
           {mode === 'continue' && (
-            <Text dimColor>Current task: {currentTask}</Text>
+            <LabelValueRow label="Current" value={currentTask} labelWidth={8} />
           )}
-          <Box>
-            <Text color="cyan" bold>{'▸ '}</Text>
-            <Text color="white">{value}</Text>
-            <Text dimColor>█</Text>
-          </Box>
-          <Text dimColor>Enter confirm, Esc back.</Text>
-        </Box>
+          <Row marginTop={1}>
+            <PromptRow value={value} placeholder="Type the next instruction" leadingSpace={false} />
+          </Row>
+          <FooterHint text="Enter confirms · Esc goes back" />
+        </Column>
       );
     }
 
     return (
-      <Box flexDirection="column" paddingX={1}>
-        <Text color="green" bold>{title}</Text>
-        <Box marginTop={1}>
-          <Text dimColor>{prompt}</Text>
-        </Box>
-        {mode === 'continue' && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text dimColor>Current task:</Text>
-            <Text color="white">{currentTask}</Text>
-          </Box>
-        )}
-        <Box marginTop={1}>
-          <Text color="cyan" bold>{'▸ '}</Text>
-          <Text color="white">{value}</Text>
-          <Text dimColor>█</Text>
-        </Box>
-        <Box marginTop={1}>
-          <Text dimColor>Press Enter to confirm, Esc to return.</Text>
-        </Box>
-      </Box>
+      <CenteredContent width={fullscreenWidth} height="100%" justifyContent="center">
+        <Panel tone="section" width={fullscreenWidth} paddingX={2}>
+          <SectionTitle title={title} tone="hero" />
+          <FooterHint text={prompt} />
+          {mode === 'continue' && (
+            <Column marginTop={1}>
+              <LabelValueRow label="Current" value={currentTask} labelWidth={8} />
+            </Column>
+          )}
+          <Row marginTop={1}>
+            <PromptRow value={value} placeholder="Type the next instruction" leadingSpace={false} />
+          </Row>
+          <Row marginTop={1}>
+            <FooterHint text="Enter confirms · Esc goes back" />
+          </Row>
+        </Panel>
+      </CenteredContent>
     );
   }
 
   if (variant === 'inline') {
     return (
-      <Box flexDirection="column">
-        <Text color="green" bold>Task completed</Text>
-        <Text dimColor>Choose what Duo should do next.</Text>
+      <Column>
+        <SectionTitle title="Task completed" tone="hero" />
+        <FooterHint text="Choose what Duo should do next." />
         {OPTIONS.map((option, index) => {
-          const active = index === selected;
           return (
-            <Text key={option.key} color={active ? 'cyan' : 'gray'} bold={active}>
-              {active ? '▸ ' : '  '}
-              {option.key}. {option.label}
-            </Text>
+            <SelectionRow
+              key={option.key}
+              label={`${option.key}. ${option.label}`}
+              selected={index === selected}
+            />
           );
         })}
-      </Box>
+      </Column>
     );
   }
 
   return (
-    <Box flexDirection="column" paddingX={1}>
-      <Text color="green" bold>Task completed</Text>
-      <Box marginTop={1}>
-        <Text dimColor>Choose what Duo should do next.</Text>
-      </Box>
-      <Box flexDirection="column" marginTop={1}>
-        {OPTIONS.map((option, index) => {
-          const active = index === selected;
-          return (
-            <Box key={option.key} flexDirection="column" marginBottom={1}>
-              <Box>
-                <Text color={active ? 'cyan' : 'gray'} bold={active}>
-                  {active ? '▸ ' : '  '}
-                  {option.key}. {option.label}
-                </Text>
-              </Box>
-              <Box marginLeft={2}>
-                <Text dimColor>{option.description}</Text>
-              </Box>
-            </Box>
-          );
-        })}
-      </Box>
-      <Box flexDirection="column">
-        <Text dimColor>Current task:</Text>
-        <Text color="white">{currentTask}</Text>
-      </Box>
-      <Box marginTop={1}>
-        <Text dimColor>Use 1/2/3, arrow keys, or Enter.</Text>
-      </Box>
-    </Box>
+    <CenteredContent width={fullscreenWidth} height="100%" justifyContent="center">
+      <Panel tone="section" width={fullscreenWidth} paddingX={2}>
+        <SectionTitle title="Task completed" tone="hero" />
+        <FooterHint text="Choose what Duo should do next." />
+        <Column marginTop={1}>
+          {OPTIONS.map((option, index) => {
+            return (
+              <Column key={option.key} marginBottom={1}>
+                <SelectionRow
+                  label={`${option.key}. ${option.label}`}
+                  selected={index === selected}
+                />
+                <Row marginLeft={4}>
+                  <Text dimColor>{option.description}</Text>
+                </Row>
+              </Column>
+            );
+          })}
+        </Column>
+        <Column>
+          <LabelValueRow label="Current" value={currentTask} labelWidth={8} />
+        </Column>
+        <Row marginTop={1}>
+          <FooterHint text="Use 1/2/3, arrow keys, or Enter." />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }

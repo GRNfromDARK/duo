@@ -6,6 +6,8 @@ import React from 'react';
 import { Box, Text } from '../../tui/primitives.js';
 import type { Message } from '../../types/ui.js';
 import { ROLE_STYLES } from '../../types/ui.js';
+import { computeOverlaySurfaceWidth } from '../screen-shell-layout.js';
+import { CenteredContent, Column, FooterHint, Panel, PromptRow, Row, SectionTitle } from '../tui-layout.js';
 
 export interface SearchOverlayProps {
   columns: number;
@@ -20,58 +22,53 @@ export function SearchOverlay({
   query,
   results,
 }: SearchOverlayProps): React.ReactElement {
+  const panelWidth = computeOverlaySurfaceWidth(columns);
   const maxResults = rows - 7; // title + search bar + footer + borders
 
   return (
-    <Box
-      flexDirection="column"
-      width={columns}
-      height={rows}
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      <Box justifyContent="center">
-        <Text bold color="cyan"> Search Messages </Text>
-      </Box>
+    <CenteredContent width={panelWidth} height={rows} justifyContent="center">
+      <Panel tone="overlay" width={panelWidth} paddingX={2}>
+        <Row justifyContent="center">
+          <SectionTitle title="Search Messages" tone="hero" />
+        </Row>
 
-      {/* Search input display */}
-      <Box marginTop={1}>
-        <Text bold color="yellow">/ </Text>
-        {query ? (
-          <Text>{query}<Text dimColor>█</Text></Text>
-        ) : (
-          <Text dimColor>Type to search...</Text>
-        )}
-      </Box>
+        <Row marginTop={1}>
+          <PromptRow
+            prompt="/"
+            promptColor="yellow"
+            value={query}
+            placeholder="Type to search..."
+            leadingSpace={false}
+          />
+        </Row>
 
-      {/* Results */}
-      <Box flexDirection="column" height={maxResults} overflow="hidden" marginTop={1}>
-        {query === '' ? (
-          <Text dimColor>Enter a search term</Text>
-        ) : results.length === 0 ? (
-          <Text dimColor>No results found</Text>
-        ) : (
-          results.slice(0, maxResults).map((msg) => {
-            const style = ROLE_STYLES[msg.role];
-            const preview = msg.content.length > columns - 20
-              ? msg.content.slice(0, columns - 23) + '...'
-              : msg.content;
-            return (
-              <Box key={msg.id}>
-                <Box width={10}>
-                  <Text color={style.color} bold>{style.displayName}</Text>
-                </Box>
-                <Text>{preview}</Text>
-              </Box>
-            );
-          })
-        )}
-      </Box>
+        <Column height={maxResults} overflow="hidden" marginTop={1}>
+          {query === '' ? (
+            <Text dimColor>Enter a search term</Text>
+          ) : results.length === 0 ? (
+            <Text dimColor>No results found</Text>
+          ) : (
+            results.slice(0, maxResults).map((msg) => {
+              const style = ROLE_STYLES[msg.role];
+              const preview = msg.content.length > panelWidth - 18
+                ? msg.content.slice(0, panelWidth - 21) + '...'
+                : msg.content;
+              return (
+                <Row key={msg.id}>
+                  <Box width={10}>
+                    <Text color={style.color} bold>{style.displayName}</Text>
+                  </Box>
+                  <Text>{preview}</Text>
+                </Row>
+              );
+            })
+          )}
+        </Column>
 
-      <Box justifyContent="center" marginTop={1}>
-        <Text dimColor>Press Esc to close</Text>
-      </Box>
-    </Box>
+        <Row justifyContent="center" marginTop={1}>
+          <FooterHint text="Press Esc to close" />
+        </Row>
+      </Panel>
+    </CenteredContent>
   );
 }
