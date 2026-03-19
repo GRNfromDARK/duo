@@ -163,13 +163,14 @@ export class GeminiGodAdapter implements GodAdapter {
       }
       throw err;
     } finally {
+      // If we were resuming but no new session_id was captured, clear stale ID
+      // (must be inside finally — generator .return() skips code after try/finally)
+      if (wasResuming && !sessionIdUpdated) {
+        this.lastSessionId = null;
+      }
       if (this.processManager.isRunning()) {
         await this.processManager.kill();
       }
-    }
-
-    if (wasResuming && !sessionIdUpdated) {
-      this.lastSessionId = null;
     }
   }
 

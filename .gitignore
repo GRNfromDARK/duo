@@ -20,3 +20,5 @@ docs/model-selection-*.md
 
 # 通配排除（不分大小写）
 *[Tt][Oo][Dd][Oo]*.md
+
+.superpowers/

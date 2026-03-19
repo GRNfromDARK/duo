@@ -284,7 +284,7 @@ async function collectGodAdapterOutput(options): Promise<string>
 **`generateCoderPrompt(ctx: PromptContext, audit?: AuditOptions): string`**
 
 按优先级组装 prompt：
-1. **Worker 角色声明**：Coder 为纯执行者，无 accept authority
+1. **Worker 角色声明**：Coder 为纯执行者，无 accept authority；语言规则（使用与任务描述相同的语言回复）
 2. **Task goal**
 3. **God instruction**（最高优先级，如有）
 4. **Reviewer Feedback**（如有 `lastReviewerOutput`，直传 Reviewer 原始分析）
@@ -303,7 +303,7 @@ async function collectGodAdapterOutput(options): Promise<string>
 
 **`generateReviewerPrompt(ctx): string`**
 
-1. **Worker 角色声明**：Reviewer 为观察提供者，verdict 仅供参考
+1. **Worker 角色声明**：Reviewer 为观察提供者，verdict 仅供参考；语言规则（使用与任务描述相同的语言回复）
 2. **Task goal**
 3. **God instruction**（如有）
 4. **Coder Output**
@@ -358,6 +358,7 @@ interface GodDecisionContext {
 - 角色：Duo runtime 的 God 编排器
 - 职责：在 coder 和 reviewer 之间路由工作直到任务完成
 - 5 种 action 及其语义
+- 语言规则：始终使用与用户任务描述相同的语言回复
 - 指导原则：多方案先送 reviewer、承认 reviewer 反馈、反思后才 accept、循环时换策略、不轻易求助用户
 - 输出格式：单个 JSON code block
 
