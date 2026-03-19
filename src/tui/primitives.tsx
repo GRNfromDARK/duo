@@ -1,7 +1,7 @@
 import React from 'react';
 import { createTextAttributes, decodePasteBytes, stripAnsiSequences, type ParsedKey } from '@opentui/core';
 import type { PasteEvent } from '@opentui/core';
-import { useAppContext, useKeyboard } from '@opentui/react';
+import { useAppContext, useKeyboard, useRenderer as _useRenderer } from '@opentui/react';
 
 export interface Key {
   upArrow: boolean;
@@ -119,6 +119,14 @@ export function usePaste(handler: (text: string) => void): void {
       keyHandler?.off('paste', stableHandler);
     };
   }, [keyHandler, stableHandler]);
+}
+
+/**
+ * Access the underlying CliRenderer instance.
+ * Useful for checking selection state and writing to the clipboard via OSC52.
+ */
+export function useRenderer() {
+  return _useRenderer();
 }
 
 export function useApp(): { exit: () => void } {
