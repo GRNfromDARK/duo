@@ -72,7 +72,8 @@ export interface MainLayoutProps {
 const STATUS_BAR_HEIGHT = 1;
 const TASK_BANNER_HEIGHT = 1;
 const INPUT_AREA_HEIGHT = 3;
-const SEPARATOR_LINES = 2;
+const HEADER_SEPARATOR_LINES = 1;
+const FOOTER_SEPARATOR_HEIGHT = 1;
 
 function resolveIndicatorConfig(
   workflowState: WorkflowStateHint | undefined,
@@ -129,8 +130,10 @@ export function MainLayout({
   const bannerHeight = hasTaskBanner ? TASK_BANNER_HEIGHT : 0;
   const messageAreaHeight = Math.max(
     1,
-    rows - STATUS_BAR_HEIGHT - bannerHeight - activeFooterHeight - SEPARATOR_LINES,
+    rows - STATUS_BAR_HEIGHT - bannerHeight - activeFooterHeight - HEADER_SEPARATOR_LINES,
   );
+  const footerBodyHeight = Math.max(1, activeFooterHeight - FOOTER_SEPARATOR_HEIGHT);
+  const separatorWidth = Math.max(1, columns - 2);
 
   const scrollRef = useRef<any>(null);
   const [displayMode, setDisplayMode] = useState<DisplayMode>('minimal');
@@ -277,7 +280,7 @@ export function MainLayout({
           )}
 
           <Box height={1}>
-            <Text dimColor>{'─'.repeat(columns)}</Text>
+            <Text dimColor>{` ${'─'.repeat(separatorWidth)}`}</Text>
           </Box>
 
           <ScrollBox
@@ -313,26 +316,31 @@ export function MainLayout({
             </Box>
           </ScrollBox>
 
-          <Box height={1}>
-            <Text dimColor>{'─'.repeat(columns)}</Text>
-          </Box>
-
-          {footer ? (
-            <Box flexDirection="column" height={activeFooterHeight} overflow="hidden">
-              {footer}
+          <Box flexDirection="column" height={activeFooterHeight}>
+            <Box height={FOOTER_SEPARATOR_HEIGHT}>
+              <Text dimColor>{` ${'─'.repeat(separatorWidth)}`}</Text>
             </Box>
-          ) : (
-            <InputArea
-              isLLMRunning={isLLMRunning}
-              onSubmit={onInputSubmit ?? (() => {})}
-              onValueChange={(value) => setInputEmpty(value === '')}
-              onSpecialKey={(value) => {
-                if (value === '?') setOverlayState((state) => openOverlay(state, 'help'));
-                if (value === '/') setOverlayState((state) => openOverlay(state, 'search'));
-              }}
-              disabled={hasOverlay}
-            />
-          )}
+            <Box
+              flexDirection="column"
+              height={footerBodyHeight}
+              paddingX={1}
+              overflow="hidden"
+            >
+              {footer ? footer : (
+                <InputArea
+                  isLLMRunning={isLLMRunning}
+                  onSubmit={onInputSubmit ?? (() => {})}
+                  maxLines={footerBodyHeight}
+                  onValueChange={(value) => setInputEmpty(value === '')}
+                  onSpecialKey={(value) => {
+                    if (value === '?') setOverlayState((state) => openOverlay(state, 'help'));
+                    if (value === '/') setOverlayState((state) => openOverlay(state, 'search'));
+                  }}
+                  disabled={hasOverlay}
+                />
+              )}
+            </Box>
+          </Box>
         </>
       )}
     </Box>
