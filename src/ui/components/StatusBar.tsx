@@ -10,7 +10,10 @@
 
 import React from 'react';
 import { Text } from '../../tui/primitives.js';
-import { buildStatusBarLayout, computeStatusBarWidth } from '../status-bar-layout.js';
+import {
+  buildStatusBarLayout,
+  computeRenderedStatusBarWidth,
+} from '../status-bar-layout.js';
 import { Row } from '../tui-layout.js';
 
 export type WorkflowStatus = 'idle' | 'active' | 'error' | 'routing' | 'interrupted' | 'done';
@@ -79,6 +82,7 @@ export function StatusBar({
   const latencyStr = godLatency !== undefined ? `${godLatency}ms` : undefined;
   const layout = buildStatusBarLayout({
     projectPath,
+    statusIcon: cfg.icon,
     statusLabel: cfg.label,
     statusColor: cfg.color,
     activeAgent,
@@ -88,7 +92,11 @@ export function StatusBar({
     godLatencyText: latencyStr,
     columns,
   });
-  const spacerWidth = Math.max(1, columns - computeStatusBarWidth(layout));
+  const hasBothGroups = layout.left.length > 0 && layout.right.length > 0;
+  const spacerWidth = Math.max(
+    hasBothGroups ? 1 : 0,
+    columns - computeRenderedStatusBarWidth(layout) + (hasBothGroups ? 1 : 0),
+  );
 
   return (
     <Row height={1} width={columns}>
@@ -101,7 +109,7 @@ export function StatusBar({
           bold={seg.kind === 'brand' || seg.kind === 'status'}
         >
           {i === 0 ? ' ' : '  '}
-          {seg.kind === 'status' ? `${cfg.icon} ${seg.text}` : seg.text}
+          {seg.kind === 'status' && seg.icon ? `${seg.icon} ${seg.text}` : seg.text}
         </Text>
       ))}
       <Text backgroundColor="black">{' '.repeat(spacerWidth)}</Text>

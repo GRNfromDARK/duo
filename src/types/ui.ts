@@ -14,7 +14,7 @@ export interface RoleStyle {
 const DEFAULT_ROLE_STYLE: RoleStyle = { displayName: 'Agent', color: 'gray', border: '│' };
 
 export const ROLE_STYLES: Record<RoleName, RoleStyle> = {
-  'claude-code': { displayName: 'Claude', color: 'blue', border: '┃' },
+  'claude-code': { displayName: 'Claude', color: '#7dcfff', border: '┃' },
   codex:         { displayName: 'Codex',  color: 'green', border: '║' },
   gemini:        { displayName: 'Gemini', color: '#FFA500', border: '│' },
   system:        { displayName: 'System', color: 'yellow', border: '·' },

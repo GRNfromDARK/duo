@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Box, Text, useInput, usePaste } from '../../tui/primitives.js';
 import type { Key } from '../../tui/primitives.js';
 import { buildInputAreaLayout } from '../input-area-layout.js';
+import { FooterHint, Row } from '../tui-layout.js';
 
 export interface InputAreaProps {
   isLLMRunning: boolean;
@@ -228,25 +229,49 @@ export function InputArea({
   return (
     <Box flexDirection="column" height={layout.height}>
       {layout.showPlaceholder ? (
-        <Box>
-          <Text color={layout.promptColor} bold>{layout.promptIcon} </Text>
-          <Text dimColor>{layout.placeholderText}</Text>
-        </Box>
+        <>
+          <Row width="100%" justifyContent="space-between">
+            <Row>
+              <Text color={layout.promptColor} bold>{`${layout.promptIcon} `}</Text>
+              <Text inverse>{layout.cursorChar}</Text>
+              <Text dimColor>{` ${layout.placeholderText}`}</Text>
+            </Row>
+            <Text color={layout.statusColor} bold>{layout.statusText}</Text>
+          </Row>
+          {layout.showHelperRow && <FooterHint text={layout.helperText} />}
+        </>
       ) : (
-        layout.lines.map((line, lineIdx) => (
-          <Box key={lineIdx}>
-            <Text color={layout.promptColor} bold>{line.prefix}</Text>
-            {line.isCursorLine ? (
-              <Text color="white">
-                {line.beforeCursor}
-                <Text inverse>{line.cursorChar}</Text>
-                {line.afterCursor}
-              </Text>
-            ) : (
-              <Text color="white">{line.beforeCursor}</Text>
-            )}
-          </Box>
-        ))
+        <>
+          {layout.lines.map((line, lineIdx) => {
+            const cursorGlyph = line.cursorChar || layout.cursorChar;
+            const lineContent = (
+              <>
+                <Text color={layout.promptColor} bold>{line.prefix}</Text>
+                {line.isCursorLine ? (
+                  <Text color="white">
+                    {line.beforeCursor}
+                    <Text inverse>{cursorGlyph}</Text>
+                    {line.afterCursor}
+                  </Text>
+                ) : (
+                  <Text color="white">{line.beforeCursor}</Text>
+                )}
+              </>
+            );
+
+            if (lineIdx === 0) {
+              return (
+                <Row key={lineIdx} width="100%" justifyContent="space-between">
+                  <Row>{lineContent}</Row>
+                  <Text color={layout.statusColor} bold>{layout.statusText}</Text>
+                </Row>
+              );
+            }
+
+            return <Row key={lineIdx}>{lineContent}</Row>;
+          })}
+          {layout.showHelperRow && <FooterHint text={layout.helperText} />}
+        </>
       )}
     </Box>
   );

@@ -39,7 +39,8 @@ describe('buildMessageBlocks', () => {
       }),
     ], 'verbose');
 
-    expect(blocks[0]?.header.label).toBe('Codex · Reviewer');
+    expect(blocks[0]?.header.name).toBe('Codex');
+    expect(blocks[0]?.header.roleTag).toBe('Reviewer');
     expect(blocks[0]?.header.tokenText).toBe('1.3k tokens');
     expect(blocks[0]?.body.content).toBe('review notes');
     expect(blocks[0]?.body.cliCommand).toBe('git diff --stat');
@@ -53,5 +54,9 @@ describe('buildMessageBlocks', () => {
 
     expect(assistantBlock?.body.tone).toBe('accent');
     expect(systemBlock?.body.tone).toBe('muted');
+    expect(assistantBlock?.header.roleTag).toBe('Coder');
+    expect(systemBlock?.header.roleTag).toBe('System');
+    expect(assistantBlock?.body.railKind).toBe('border');
+    expect(systemBlock?.body.railKind).toBe('border');
   });
 });

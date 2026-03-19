@@ -2,17 +2,27 @@ import type { DisplayMode } from './display-mode.js';
 import type { MarkdownSegment } from './markdown-parser.js';
 
 export type StreamTone = 'accent' | 'muted' | 'warning' | 'neutral';
+export type ParagraphSpanKind = 'text' | 'inline_code' | 'bold' | 'italic';
+
+export interface ParagraphSpan {
+  kind: ParagraphSpanKind;
+  text: string;
+}
 
 export type StreamRenderEntry =
-  | { kind: 'paragraph'; text: string; spacingAfter: number }
-  | { kind: 'inline_code'; content: string; spacingAfter: number }
-  | { kind: 'bold'; text: string; spacingAfter: number }
-  | { kind: 'italic'; text: string; spacingAfter: number }
+  | { kind: 'paragraph'; spans: ParagraphSpan[]; spacingAfter: number }
   | { kind: 'list_item'; marker: string; text: string; spacingAfter: number }
   | { kind: 'table'; headers: string[]; rows: string[][]; spacingAfter: number }
   | { kind: 'code_block'; content: string; language?: string; spacingAfter: number }
   | { kind: 'activity_block'; title: string; content: string; tone: StreamTone; spacingAfter: number }
-  | { kind: 'activity_summary'; summary: string; tone: StreamTone; spacingAfter: number };
+  | {
+    kind: 'activity_summary';
+    summary: string;
+    badgeText: string;
+    detailText?: string;
+    tone: StreamTone;
+    spacingAfter: number;
+  };
 
 export interface SystemMessageAppearance {
   tone: StreamTone;
@@ -27,10 +37,74 @@ function toneForActivity(kind: 'activity' | 'result' | 'error'): StreamTone {
 }
 
 function splitParagraphs(text: string): string[] {
-  return text
-    .split(/\n\s*\n/g)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph.length > 0);
+  return text.split(/\n\s*\n/g);
+}
+
+function pluralize(count: number, singular: string): string {
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function appendParagraphSpan(spans: ParagraphSpan[], nextSpan: ParagraphSpan): void {
+  if (nextSpan.text.length === 0) return;
+
+  const previous = spans[spans.length - 1];
+  if (previous?.kind === 'text' && nextSpan.kind === 'text') {
+    previous.text += nextSpan.text;
+    return;
+  }
+
+  spans.push(nextSpan);
+}
+
+function flushParagraph(
+  entries: StreamRenderEntry[],
+  spans: ParagraphSpan[],
+  spacingAfter: number,
+): void {
+  if (spans.length === 0) {
+    return;
+  }
+
+  entries.push({
+    kind: 'paragraph',
+    spans: [...spans],
+    spacingAfter,
+  });
+  spans.length = 0;
+}
+
+function appendTextContent(
+  entries: StreamRenderEntry[],
+  spans: ParagraphSpan[],
+  text: string,
+): void {
+  const paragraphs = splitParagraphs(text);
+
+  paragraphs.forEach((paragraph, index) => {
+    appendParagraphSpan(spans, { kind: 'text', text: paragraph });
+    if (index < paragraphs.length - 1) {
+      flushParagraph(entries, spans, 1);
+    }
+  });
+}
+
+function extractToolUpdateSummary(
+  text: string,
+): { badgeText: string; detailText?: string; remainingText: string } | null {
+  const lines = text.replace(/\r/g, '').split('\n');
+  const firstLine = lines[0]?.trim();
+  if (!firstLine) return null;
+
+  const match = /^⏺\s+(\d+ tool updates(?: · \d+ warnings?)?)(?: · (latest .+))?$/.exec(firstLine);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    badgeText: match[1]!,
+    detailText: match[2] ?? undefined,
+    remainingText: lines.slice(1).join('\n').replace(/^\n+/, ''),
+  };
 }
 
 function summarizeActivityRun(
@@ -44,13 +118,17 @@ function summarizeActivityRun(
   const errorCount = run.filter((segment) => segment.kind === 'error').length;
 
   const parts: string[] = [];
-  if (activityCount > 0) parts.push(`${activityCount} actions`);
-  if (resultCount > 0) parts.push(`${resultCount} results`);
-  if (errorCount > 0) parts.push(`${errorCount} errors`);
+  if (activityCount > 0) parts.push(pluralize(activityCount, 'action'));
+  if (resultCount > 0) parts.push(pluralize(resultCount, 'result'));
+  if (errorCount > 0) parts.push(pluralize(errorCount, 'warning'));
 
-  const summary = run.length > 1
-    ? `${parts.join(' · ')} · latest ${latestActivity.title}: ${latestSummary}`
-    : `${latestActivity.title}: ${latestSummary}`;
+  const badgeText = run.length > 1
+    ? parts.join(' · ')
+    : latestActivity.title;
+  const detailText = latestSummary
+    ? `latest ${latestActivity.title}: ${latestSummary}`
+    : undefined;
+  const summary = [badgeText, detailText].filter(Boolean).join(' · ');
 
   const tone = errorCount > 0
     ? 'warning'
@@ -61,6 +139,8 @@ function summarizeActivityRun(
   return {
     kind: 'activity_summary',
     summary,
+    badgeText,
+    detailText,
     tone,
     spacingAfter: 1,
   };
@@ -71,11 +151,13 @@ export function buildStreamRenderModel(
   displayMode: DisplayMode,
 ): StreamRenderEntry[] {
   const entries: StreamRenderEntry[] = [];
+  const paragraphSpans: ParagraphSpan[] = [];
 
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index]!;
 
     if (segment.type === 'activity_block' && displayMode === 'minimal') {
+      flushParagraph(entries, paragraphSpans, 1);
       const activityRun = [segment];
       while (index + 1 < segments.length && segments[index + 1]?.type === 'activity_block') {
         activityRun.push(segments[index + 1] as Extract<MarkdownSegment, { type: 'activity_block' }>);
@@ -87,35 +169,41 @@ export function buildStreamRenderModel(
 
     switch (segment.type) {
       case 'text': {
-        const paragraphs = splitParagraphs(segment.content);
-        if (paragraphs.length === 0) {
-          entries.push({ kind: 'paragraph', text: '', spacingAfter: 0 });
+        const toolSummary = extractToolUpdateSummary(segment.content);
+        if (toolSummary) {
+          flushParagraph(entries, paragraphSpans, 1);
+          entries.push({
+            kind: 'activity_summary',
+            summary: [toolSummary.badgeText, toolSummary.detailText].filter(Boolean).join(' · '),
+            badgeText: toolSummary.badgeText,
+            detailText: toolSummary.detailText,
+            tone: toolSummary.badgeText.includes('warning') ? 'warning' : 'accent',
+            spacingAfter: toolSummary.remainingText.trim().length > 0 ? 1 : 0,
+          });
+          if (toolSummary.remainingText.trim().length > 0) {
+            appendTextContent(entries, paragraphSpans, toolSummary.remainingText);
+          }
           break;
         }
 
-        paragraphs.forEach((paragraph, paragraphIndex) => {
-          entries.push({
-            kind: 'paragraph',
-            text: paragraph,
-            spacingAfter: paragraphIndex < paragraphs.length - 1 ? 1 : 0,
-          });
-        });
+        appendTextContent(entries, paragraphSpans, segment.content);
         break;
       }
 
       case 'inline_code':
-        entries.push({ kind: 'inline_code', content: segment.content, spacingAfter: 0 });
+        appendParagraphSpan(paragraphSpans, { kind: 'inline_code', text: segment.content });
         break;
 
       case 'bold':
-        entries.push({ kind: 'bold', text: segment.content, spacingAfter: 0 });
+        appendParagraphSpan(paragraphSpans, { kind: 'bold', text: segment.content });
         break;
 
       case 'italic':
-        entries.push({ kind: 'italic', text: segment.content, spacingAfter: 0 });
+        appendParagraphSpan(paragraphSpans, { kind: 'italic', text: segment.content });
         break;
 
       case 'list_item':
+        flushParagraph(entries, paragraphSpans, 1);
         entries.push({
           kind: 'list_item',
           marker: segment.marker,
@@ -125,6 +213,7 @@ export function buildStreamRenderModel(
         break;
 
       case 'table':
+        flushParagraph(entries, paragraphSpans, 1);
         entries.push({
           kind: 'table',
           headers: segment.headers,
@@ -134,6 +223,7 @@ export function buildStreamRenderModel(
         break;
 
       case 'code_block':
+        flushParagraph(entries, paragraphSpans, 1);
         entries.push({
           kind: 'code_block',
           content: segment.content,
@@ -143,6 +233,7 @@ export function buildStreamRenderModel(
         break;
 
       case 'activity_block':
+        flushParagraph(entries, paragraphSpans, 1);
         entries.push({
           kind: 'activity_block',
           title: segment.title,
@@ -154,6 +245,7 @@ export function buildStreamRenderModel(
     }
   }
 
+  flushParagraph(entries, paragraphSpans, 0);
   return entries;
 }
 
