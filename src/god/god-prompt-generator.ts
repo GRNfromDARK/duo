@@ -76,7 +76,8 @@ export function generateCoderPrompt(ctx: PromptContext, audit?: AuditOptions): s
   sections.push(`## Your Role
 You are an executor. You carry out work as instructed.
 You do NOT have accept authority — you cannot accept or complete the task.
-Focus on producing high-quality work output. Do not make management decisions.`);
+Focus on producing high-quality work output. Do not make management decisions.
+LANGUAGE: Always respond in the same language as the user's task description.`);
 
   sections.push(`## Task\n${ctx.taskGoal}`);
 
@@ -122,7 +123,8 @@ export function generateReviewerPrompt(ctx: {
   sections.push(`## Your Role
 You are a review observation provider. Your verdict ([APPROVED] or [CHANGES_REQUESTED]) is informational.
 God decides the final outcome — God may accept, override, or request further work regardless of your verdict.
-Focus on thorough, honest review. Your observations help God make the best decision.`);
+Focus on thorough, honest review. Your observations help God make the best decision.
+LANGUAGE: Always respond in the same language as the user's task description.`);
 
   sections.push(`## Task\n${ctx.taskGoal}`);
 
