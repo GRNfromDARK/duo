@@ -10,6 +10,7 @@ Duo 的终端 UI 基于以下技术栈：
 - **@xstate/react** — 通过 `useMachine` hook 驱动工作流状态机 (`workflowMachine`)，实现 CODING -> ROUTING -> REVIEWING -> EVALUATING 等状态转换
 - **纯函数状态层** — 所有复杂逻辑提取到 `src/ui/*.ts`（见 `ui-state.md`），组件仅负责渲染和事件绑定
 - **TUI 适配层** — `src/tui/` 目录（见 `ui-state.md` TUI 层一节），负责 OpenTUI 原语桥接、CLI 入口和 Bun 运行时定位
+- **统一 OpenTUI 布局原语** — `src/ui/tui-layout.tsx` + `src/ui/tui-layout-model.ts` 提供跨屏幕共享的 `Row`/`Column`/`Panel`/`Divider`/`SelectionRow` 等复合布局组件（见 `ui-state.md` Shared Layout Primitives 一节）
 
 整个 UI 组件层共 **21 个组件**，分为三组：
 - **Core 组件**（14 个）— 通用 UI 组件：布局、输入、消息渲染、Overlay、状态栏等
@@ -17,6 +18,10 @@ Duo 的终端 UI 基于以下技术栈：
 - **Lifecycle 组件**（3 个）— 任务完成屏幕、任务 banner、思考指示器
 
 > **OpenTUI 迁移说明**：`ScrollIndicator.tsx` 组件已删除。其功能由 OpenTUI 的 `ScrollBox` 组件原生提供（`stickyScroll` 自动跟随、`scrollBy`/`scrollTo` 编程滚动）。MainLayout 现在直接使用 `ScrollBox` 管理消息区滚动，不再需要手动 scroll state 管理。
+
+> **统一 OpenTUI 布局迁移**：Setup 向导和 Session 主界面已统一到 OpenTUI 主题下。共享布局原语（`screen-shell-layout.ts` 的响应式宽度计算、`tui-layout.tsx` 的 `Panel`/`Row`/`Column`/`CenteredContent` 等组件、`tui-layout-model.ts` 的 `PanelTone` 色调系统）确保所有屏幕使用一致的视觉风格。Setup 向导的 hero 文案提取到 `setup-copy.ts`，stepper 和 hero 区域布局逻辑提取到 `setup-wizard-layout.ts`。详见 `ui-state.md` Shared Layout Primitives 一节。
+
+> **Paste 支持**：`tui/primitives.tsx` 新增 `usePaste` hook，为所有 TUI 输入组件启用 bracketed paste mode 支持。InputArea、CompletionScreen、SearchOverlay 等包含文本输入的组件均已集成 paste 功能，用户可通过 Cmd+V / Ctrl+V 粘贴文本到任何输入场景。
 
 ## 组件树结构
 

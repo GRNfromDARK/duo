@@ -359,6 +359,8 @@ interface GodDecisionContext {
 - 职责：在 coder 和 reviewer 之间路由工作直到任务完成
 - 5 种 action 及其语义
 - 语言规则：始终使用与用户任务描述相同的语言回复
+- 探索→实现过渡规则：从 explore/discuss 切换到 code/debug 时，先将发现送 reviewer 验证
+- 分支规则：code/debug 工作必须先建 feature branch，accept_task 前确认已合并到 main
 - 指导原则：多方案先送 reviewer、承认 reviewer 反馈、反思后才 accept、循环时换策略、不轻易求助用户
 - 输出格式：单个 JSON code block
 
@@ -602,6 +604,8 @@ async function restoreGodSession(state, adapterFactory): Promise<null>
 ```
 
 始终返回 `null`。实际会话恢复逻辑在各 GodAdapter 实现中（`lastSessionId` / `restoreSessionId` / `clearSession`）。
+
+**Session 清理修复**：Claude Code 和 Gemini 适配器将 stale session ID 清理逻辑移入 `finally` 块，确保流中断（generator `.return()`）时也能正确清理，避免后续调用使用过期的 session ID。
 
 ---
 
