@@ -39,9 +39,10 @@ let interruptFired = false;
 let cachedText = '';
 let cachedSelObj: object | null = null;
 let triggerRerender: (() => void) | null = null;
-let autoCopyPayload: string | null = null;
+// Direct spy on renderer.copyToClipboardOSC52 — records every real call
+let osc52Calls: string[] = [];
 
-function reset() { copyPayload = null; interruptFired = false; autoCopyPayload = null; }
+function reset() { copyPayload = null; interruptFired = false; osc52Calls = []; }
 
 // ── Test component: mirrors App.tsx logic including key.super fix ─────────────
 function TestApp() {
@@ -51,6 +52,16 @@ function TestApp() {
   const cacheSelRef = useRef<object | null>(null);
 
   triggerRerender = () => setCounter((c) => c + 1);
+
+  // Wrap renderer.copyToClipboardOSC52 to record all calls.
+  // This lets us assert the real clipboard API was invoked, not a shadow variable.
+  useEffect(() => {
+    const origCopy = renderer.copyToClipboardOSC52.bind(renderer);
+    renderer.copyToClipboardOSC52 = (text: string, ...args: any[]) => {
+      osc52Calls.push(text);
+      return origCopy(text, ...args);
+    };
+  }, [renderer]);
 
   useEffect(() => {
     const onSelectionFinish = (selection: { getSelectedText?: () => string } | null) => {
@@ -62,7 +73,6 @@ function TestApp() {
       // Auto-copy on selection (mirrors App.tsx)
       if (text) {
         renderer.copyToClipboardOSC52(text);
-        autoCopyPayload = text;
       }
     };
     renderer.on('selection', onSelectionFinish);
@@ -164,7 +174,7 @@ async function main() {
 
   // ── Path 1: drag finish → selection event writes cache + auto-copies ─────
   console.log('\n--- Path 1: selection event caches text AND auto-copies at drag-finish ---');
-  cachedText = ''; cachedSelObj = null; autoCopyPayload = null;
+  cachedText = ''; cachedSelObj = null; osc52Calls = [];
   await s.mockMouse.drag(tCol, tRow, tCol + 11, tRow);
   await settle(s);
 
@@ -172,11 +182,15 @@ async function main() {
   assert('selection event wrote cachedText', cachedText.length > 0, `"${cachedText}"`);
   assert('cachedText contains "Hello"', cachedText.includes('Hello'), `"${cachedText}"`);
   assert('cachedSelObj is set', cachedSelObj !== null);
-  // Auto-copy: drag finish must immediately copy to clipboard (no keypress needed)
-  assert('AUTO-COPY: clipboard written on drag finish', autoCopyPayload !== null && autoCopyPayload.length > 0,
-    `autoCopyPayload="${autoCopyPayload}"`);
-  assert('AUTO-COPY: payload matches cached text', autoCopyPayload === cachedText,
-    `autoCopy="${autoCopyPayload}", cached="${cachedText}"`);
+  // Auto-copy: assert the REAL renderer.copyToClipboardOSC52 was called on drag finish
+  assert('AUTO-COPY: copyToClipboardOSC52 called on drag finish',
+    osc52Calls.length > 0, `osc52Calls.length=${osc52Calls.length}`);
+  assert('AUTO-COPY: OSC52 payload contains "Hello"',
+    osc52Calls.some(t => t.includes('Hello')),
+    `osc52Calls=${JSON.stringify(osc52Calls)}`);
+  assert('AUTO-COPY: OSC52 payload matches cached text',
+    osc52Calls.includes(cachedText),
+    `osc52Calls=${JSON.stringify(osc52Calls)}, cached="${cachedText}"`);
 
   const selAfterDrag = s.renderer.getSelection();
   assert('identity: getSelection() === cachedSelObj', selAfterDrag === cachedSelObj);
