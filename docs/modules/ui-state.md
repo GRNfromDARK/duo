@@ -12,8 +12,8 @@ Duo 的 UI 状态层遵循 **纯函数提取** 原则：
 
 这一设计与 `InputArea.processInput`、`DirectoryPicker.processPickerInput` 等组件级纯函数保持一致，形成统一的 "state -> pure fn -> new state" 模式。
 
-整个 UI 状态层共 **27 个模块**，分为五组：
-- **Core UI 状态**（7 个）— 通用 UI 逻辑：显示模式、目录选择器、快捷键、Overlay、Markdown 解析、Git diff 统计、流式聚合、消息行计算
+整个 UI 状态层共 **28 个模块**，分为五组：
+- **Core UI 状态**（8 个）— 通用 UI 逻辑：显示模式、目录选择器、快捷键、Overlay、Markdown 解析、Git diff 统计、流式聚合、消息行计算、剪贴板
 - **God LLM UI 状态**（6 个）— God 决策层的 UI 状态：retry 包装、消息样式、阶段切换、重分类、任务分析
 - **Runtime/Lifecycle 状态**（3 个）— 运行时生命周期管理：任务完成流、全局 Ctrl+C 处理、安全退出
 - **Layout Primitives**（6 个）— OpenTUI layout 原语：从组件中提取的纯布局/样式计算逻辑，包括代码块折叠、输入区域、消息块、状态栏、流式渲染、任务 banner
@@ -79,7 +79,7 @@ createCliRenderer({ exitOnCtrlC: false, useAlternateScreen: true })
 
 ## 模块总览
 
-### Core UI 状态（7 个）
+### Core UI 状态（8 个）
 
 | # | 文件 | 职责 | FR 来源 |
 |---|------|------|---------|
@@ -90,6 +90,7 @@ createCliRenderer({ exitOnCtrlC: false, useAlternateScreen: true })
 | 5 | `markdown-parser.ts` | Markdown 解析 | FR-023 |
 | 6 | `git-diff-stats.ts` | Git diff 统计 | FR-026 |
 | 7 | `session-runner-state.ts` | 流式聚合与路由决策 | 多 FR |
+| 7b | `clipboard.ts` | 统一剪贴板 helper | OSC52 + 平台 fallback |
 
 ### God LLM UI 状态（6 个）
 
@@ -403,6 +404,45 @@ interface GitDiffStats {
 | 函数 | 输入 | 输出 | 关键逻辑 |
 |------|------|------|----------|
 | `parseGitDiffStat(output)` | `git diff --stat` 的输出字符串 | `GitDiffStats` | 正则提取 `N files changed`（`/(\d+)\s+files?\s+changed/`）、`N insertions(+)`（`/(\d+)\s+insertions?\(\+\)/`）、`N deletions(-)`（`/(\d+)\s+deletions?\(-\)/`）；无 filesMatch 时返回全零对象 |
+
+---
+
+### 7b. clipboard.ts — 统一剪贴板 helper
+
+统一的剪贴板复制模块，采用 OSC52 优先 + 平台原生命令 fallback 策略。App.tsx 的 auto-copy on selection 和 Ctrl/Cmd+C 复制均通过此模块执行。
+
+#### 核心类型
+
+```ts
+interface FallbackCandidate {
+  cmd: string;   // 平台命令（pbcopy / xclip / xsel / wl-copy）
+  args: string[];
+}
+
+interface ClipboardRenderer {
+  copyToClipboardOSC52(text: string): boolean;
+}
+
+interface CopyToClipboardResult {
+  success: boolean;
+  method: 'osc52' | 'fallback' | 'none';
+  hint?: string;  // 首次全部失败时的一次性诊断提示
+}
+```
+
+#### 核心函数
+
+| 函数 | 输入 | 输出 | 关键逻辑 |
+|------|------|------|----------|
+| `copyToClipboard(renderer, text)` | `ClipboardRenderer` + 文本 | `CopyToClipboardResult` | 优先 OSC52；失败后按优先级遍历平台候选命令；全部失败时返回一次性诊断提示 |
+| `buildFallbackCandidates()` | — | `FallbackCandidate[]` | macOS: `pbcopy`；Wayland: `wl-copy` → `xclip` → `xsel`；X11: `xclip` → `xsel`。每次调用时重新计算以响应环境变化 |
+| `tryFallbackCopy(text, candidate)` | 文本 + 候选命令 | `boolean` | 通过 `execFileSync` 执行命令，3 秒超时，失败返回 false |
+
+#### 复制策略优先级
+
+1. `renderer.copyToClipboardOSC52()` — 终端原生 OSC52 协议
+2. 平台原生命令（按顺序尝试直到成功）
+3. 静默失败 + 一次性诊断提示（`hint` 字段）
 
 ---
 
