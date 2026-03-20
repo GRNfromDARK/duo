@@ -44,6 +44,7 @@ import { CompletionScreen } from './CompletionScreen.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
 import { buildContinuedTaskPrompt } from '../completion-flow.js';
 import { resolveGlobalCtrlCAction } from '../global-ctrl-c.js';
+import type { Key } from '../../tui/primitives.js';
 import { performSafeShutdown } from '../safe-shutdown.js';
 import { appendPromptLog } from '../../session/prompt-log.js';
 import {
@@ -129,6 +130,44 @@ function getActiveAgentLabel(
   return null;
 }
 
+// ── Copy-on-selection decision logic (exported for testing) ──
+
+export type CopyAction =
+  | { action: 'copy'; text: string }
+  | { action: 'interrupt' }
+  | { action: 'noop' };
+
+/**
+ * Pure decision function: given the key event and renderer selection state,
+ * decide whether to copy, interrupt, or do nothing.
+ *
+ * Extracted from the useInput handler so tests can verify the real logic
+ * without mounting the full App component tree.
+ */
+export function resolveCopyOrInterrupt(
+  input: string,
+  key: Pick<Key, 'ctrl' | 'meta' | 'super'>,
+  hasSelection: boolean,
+  liveText: string,
+  cachedText: string,
+  cacheValid: boolean,
+): CopyAction {
+  const isCopyKey = (key.ctrl || key.meta || key.super) && input === 'c';
+  if (!isCopyKey) return { action: 'noop' };
+
+  if (hasSelection) {
+    const text = liveText || (cacheValid ? cachedText : '');
+    if (text) return { action: 'copy', text };
+    return { action: 'noop' };
+  }
+
+  // Cmd+C (meta/super, no ctrl) without a selection: ignore — don't interrupt.
+  if (!key.ctrl) return { action: 'noop' };
+
+  // Ctrl+C without selection: interrupt.
+  return { action: 'interrupt' };
+}
+
 // ── Root App Component ──
 
 export function App({ initialConfig, detected, resumeSession }: AppProps): React.ReactElement {
@@ -199,33 +238,26 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
   }, [renderer]);
 
   useInput((input, key) => {
-    // Match Ctrl+C (all platforms) and Cmd+C (macOS).
-    // On macOS with kitty keyboard protocol, Command maps to key.super,
-    // while Option maps to key.meta.  Check all three modifiers so that
-    // both Ctrl+C and Command+C trigger the copy-or-interrupt path.
-    const isCopyKey = (key.ctrl || key.meta || key.super) && input === 'c';
-    if (!isCopyKey) return;
+    const currentSel = renderer.hasSelection ? renderer.getSelection() : null;
+    const liveText = currentSel?.getSelectedText() ?? '';
+    const cacheValid = currentSel != null && currentSel === cachedSelectionRef.current;
 
-    // If there is an active text selection, copy it to the clipboard via OSC52
-    // and do NOT trigger the interrupt/exit flow.
-    // Use live extraction first; fall back to the cached snapshot captured at
-    // drag-finish time (immune to renderable staleness from re-renders).
-    // The cache is only used when the current Selection object is the same
-    // instance that produced the cache (identity check prevents stale leaks).
-    if (renderer.hasSelection) {
-      const currentSel = renderer.getSelection();
-      const liveText = currentSel?.getSelectedText() ?? '';
-      const cacheValid = currentSel != null && currentSel === cachedSelectionRef.current;
-      const text = liveText || (cacheValid ? cachedSelectionTextRef.current : '');
-      if (text) {
-        renderer.copyToClipboardOSC52(text);
-      }
+    const copyResult = resolveCopyOrInterrupt(
+      input, key,
+      renderer.hasSelection,
+      liveText,
+      cachedSelectionTextRef.current,
+      cacheValid,
+    );
+
+    if (copyResult.action === 'copy') {
+      renderer.copyToClipboardOSC52(copyResult.text);
       return;
     }
 
-    // Cmd+C (meta/super, no ctrl) without a selection: ignore — don't interrupt.
-    if (!key.ctrl) return;
+    if (copyResult.action === 'noop') return;
 
+    // copyResult.action === 'interrupt'
     // Ctrl+C without selection: existing interrupt / safe-exit logic.
     const result = resolveGlobalCtrlCAction(Date.now(), lastCtrlCRef.current);
     lastCtrlCRef.current = result.nextLastCtrlCAt;

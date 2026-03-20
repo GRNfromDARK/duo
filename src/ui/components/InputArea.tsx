@@ -174,8 +174,9 @@ export function processInput(
     return { type: 'noop' };
   }
 
-  // Ignore ctrl combinations not handled above
-  if (key.ctrl) {
+  // Ignore ctrl/super/meta combinations not handled above
+  // (super = macOS Command key, meta = macOS Option key via kitty protocol)
+  if (key.ctrl || key.super || key.meta) {
     return { type: 'noop' };
   }
 
