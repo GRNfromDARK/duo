@@ -7,7 +7,7 @@
  *
  * Validates the critical paths for the copy fix:
  *
- *   Path 1  – drag finish → 'selection' event writes cache (text + identity)
+ *   Path 1  – drag finish → 'selection' event writes cache AND auto-copies to clipboard
  *   Path 2  – 5× rapid re-renders → identity preserved (same Selection object)
  *   Path 3  – Ctrl+C with selection → copies text, no interrupt
  *   Path 4  – FORCED FALLBACK: after re-renders, live getSelectedText() returns ''
@@ -39,8 +39,9 @@ let interruptFired = false;
 let cachedText = '';
 let cachedSelObj: object | null = null;
 let triggerRerender: (() => void) | null = null;
+let autoCopyPayload: string | null = null;
 
-function reset() { copyPayload = null; interruptFired = false; }
+function reset() { copyPayload = null; interruptFired = false; autoCopyPayload = null; }
 
 // ── Test component: mirrors App.tsx logic including key.super fix ─────────────
 function TestApp() {
@@ -53,10 +54,16 @@ function TestApp() {
 
   useEffect(() => {
     const onSelectionFinish = (selection: { getSelectedText?: () => string } | null) => {
-      cacheTextRef.current = selection?.getSelectedText?.() ?? '';
+      const text = selection?.getSelectedText?.() ?? '';
+      cacheTextRef.current = text;
       cacheSelRef.current = selection;
-      cachedText = cacheTextRef.current;
+      cachedText = text;
       cachedSelObj = cacheSelRef.current;
+      // Auto-copy on selection (mirrors App.tsx)
+      if (text) {
+        renderer.copyToClipboardOSC52(text);
+        autoCopyPayload = text;
+      }
     };
     renderer.on('selection', onSelectionFinish);
     return () => { renderer.off('selection', onSelectionFinish); };
@@ -155,9 +162,9 @@ async function main() {
   const { row: tRow, col: tCol } = findText(s, 'Hello World');
   assert('Text rendered', tRow >= 0);
 
-  // ── Path 1: drag finish → selection event writes cache ──────────────────
-  console.log('\n--- Path 1: selection event caches text at drag-finish ---');
-  cachedText = ''; cachedSelObj = null;
+  // ── Path 1: drag finish → selection event writes cache + auto-copies ─────
+  console.log('\n--- Path 1: selection event caches text AND auto-copies at drag-finish ---');
+  cachedText = ''; cachedSelObj = null; autoCopyPayload = null;
   await s.mockMouse.drag(tCol, tRow, tCol + 11, tRow);
   await settle(s);
 
@@ -165,6 +172,11 @@ async function main() {
   assert('selection event wrote cachedText', cachedText.length > 0, `"${cachedText}"`);
   assert('cachedText contains "Hello"', cachedText.includes('Hello'), `"${cachedText}"`);
   assert('cachedSelObj is set', cachedSelObj !== null);
+  // Auto-copy: drag finish must immediately copy to clipboard (no keypress needed)
+  assert('AUTO-COPY: clipboard written on drag finish', autoCopyPayload !== null && autoCopyPayload.length > 0,
+    `autoCopyPayload="${autoCopyPayload}"`);
+  assert('AUTO-COPY: payload matches cached text', autoCopyPayload === cachedText,
+    `autoCopy="${autoCopyPayload}", cached="${cachedText}"`);
 
   const selAfterDrag = s.renderer.getSelection();
   assert('identity: getSelection() === cachedSelObj', selAfterDrag === cachedSelObj);
