@@ -44,6 +44,7 @@ import { CompletionScreen } from './CompletionScreen.js';
 import { canTriggerReclassify, writeReclassifyAudit } from '../reclassify-overlay.js';
 import { buildContinuedTaskPrompt } from '../completion-flow.js';
 import { resolveGlobalCtrlCAction } from '../global-ctrl-c.js';
+import { copyToClipboard } from '../clipboard.js';
 import type { Key } from '../../tui/primitives.js';
 import { performSafeShutdown } from '../safe-shutdown.js';
 import { appendPromptLog } from '../../session/prompt-log.js';
@@ -230,7 +231,11 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
       // Auto-copy on selection: immediately copy to clipboard when user
       // finishes a mouse-drag selection, so no extra keypress is needed.
       if (text) {
-        renderer.copyToClipboardOSC52(text);
+        const result = copyToClipboard(renderer, text);
+        if (result.hint) {
+          // eslint-disable-next-line no-console
+          console.error(result.hint);
+        }
       }
     };
     renderer.on('selection', onSelectionFinish);
@@ -251,7 +256,11 @@ export function App({ initialConfig, detected, resumeSession }: AppProps): React
     );
 
     if (copyResult.action === 'copy') {
-      renderer.copyToClipboardOSC52(copyResult.text);
+      const clipResult = copyToClipboard(renderer, copyResult.text);
+      if (clipResult.hint) {
+        // eslint-disable-next-line no-console
+        console.error(clipResult.hint);
+      }
       return;
     }
 
